@@ -1,0 +1,26 @@
+{
+  "name": "icq-modern",
+  "version": "1.0.0",
+  "description": "ICQ Modern chat application",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"No tests configured\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.6.2",
+    "canvas": "^3.2.1",
+    "express": "^5.2.1",
+    "linkify-it": "^5.0.0",
+    "markdown-it": "^14.1.1",
+    "multer": "^2.1.0",
+    "open-graph-scraper": "^6.11.0",
+    "socket.io": "^4.8.3",
+    "uuid": "^13.0.0",
+    "web-push": "^3.6.7"
+  }
+}

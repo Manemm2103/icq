@@ -1,0 +1,12 @@
+node_modules/
+data/
+chat.db
+call-debug.log
+output.log
+public/uploads/
+public/backgrounds/
+patch_*.js
+*.backup-*
+.env
+vapidKeys.json
+

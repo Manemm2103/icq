@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ICQ Modern</title>
+    <link rel="stylesheet" href="style.css?v=38">
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <link rel="manifest" href="/manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#dcdcdc">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/png" href="/icon.png">
+</head>
+<body>
+
+    <!-- Login -->
+    <div id="login-screen" class="screen active">
+        <div class="login-box">
+            <div class="flower-logo">
+                <span class="petal p1"></span>
+                <span class="petal p2"></span>
+                <span class="petal p3"></span>
+                <span class="petal p4"></span>
+                <span class="petal p5"></span>
+                <span class="petal p6"></span>
+                <div class="center"></div>
+            </div>
+            <h1>ICQ Modern</h1>
+            <input type="text" id="username" placeholder="ICQ Nummer / Benutzername">
+            <input type="password" id="password" placeholder="Passwort">
+            <button onclick="login()">Anmelden</button>
+            <p class="error-msg" id="login-error"></p>
+        </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="main-app" class="screen">
+        <div class="sidebar" id="sidebar">
+            <div class="user-profile">
+                <!-- Avatar is now clickable for profile edit -->
+                <div class="avatar" id="my-avatar" onclick="openProfile()" title="Mein Profil bearbeiten"></div>
+                <div class="status-indicator online"></div>
+                <span id="my-username">Ich</span>
+                
+                <!-- Admin Button -->
+                <button id="enable-push-btn" onclick="requestPushPermission()" class="icon-btn" title="Push aktivieren" style="display:inline-block;">🔔</button>
+                        <button id="admin-btn" onclick="openAdmin()" class="icon-btn" style="margin-left: 10px; font-size: 1.5rem; display:none;" title="Admin Panel">⚙️</button>
+                <button onclick="logout()" class="icon-btn logout-btn" title="Abmelden">🚪</button>
+            </div>
+            <div class="search-bar">
+                <input type="text" placeholder="Suchen..." oninput="filterContacts(this.value)">
+            </div>
+            <div class="contact-list" id="contact-list">
+                <!-- Contacts -->
+            </div>
+        </div>
+
+        <div class="chat-area" id="chat-area">
+            <!-- Normal Chat Header -->
+            <div class="chat-header">
+                <button class="back-btn" onclick="showContactList()">⬅<span id="global-unread-badge" class="unread-badge" style="position:absolute; top:-5px; right:-10px; display:none;">0</span></button>
+                <div class="chat-contact-info">
+                    <div id="chat-avatar" class="chat-header-avatar"></div>
+                    <span class="status-dot" id="chat-status"></span>
+                    <div class="header-details">
+                        <h3 id="chat-title">Wähle einen Kontakt</h3>
+                        <span id="chat-subtitle" class="chat-subtitle"></span>
+                    </div>
+                </div>
+                <div class="header-actions" style="margin-left: auto; display: flex; gap: 10px;">
+                    <button id="call-audio-btn" class="icon-btn" style="display:none;" onclick="startCall(false)" title="Sprachanruf">📞</button>
+                    <button id="call-video-btn" class="icon-btn" style="display:none;" onclick="startCall(true)" title="Videoanruf">🎥</button>
+                </div>
+            </div>
+            
+            <div class="messages" id="messages">
+                <div class="empty-state">
+                    <p>Keine Nachrichten hier... 🦗</p>
+                </div>
+            </div>
+
+            <div class="input-area">
+                <!-- Reply Preview -->
+                <div id="reply-preview" class="reply-preview">
+                    <span id="reply-preview-content"></span>
+                    <span class="reply-close" onclick="cancelReply()">✕</span>
+                </div>
+
+                <div class="input-wrapper">
+                    <!-- Attachment -->
+                    <label for="file-upload" class="icon-btn attach-btn" title="Datei senden">📎</label>
+                    <input type="file" id="file-upload" style="display:none" onchange="handleFileUpload(this)">
+                    
+                    <!-- Code Button (Block) -->
+                    <button id="code-input-btn" class="icon-btn code-btn" title="Code Block einfügen">&lt;/&gt;</button>
+                    
+                    <div style="width:1px; height:20px; background:#ccc; margin:0 5px;"></div>
+
+                    <!-- Markdown Toolbar -->
+                    <button onclick="insertMarkdown('*')" class="icon-btn md-btn" title="Fett"><b>B</b></button>
+                    <button onclick="insertMarkdown('_')" class="icon-btn md-btn" title="Kursiv"><i>I</i></button>
+                    <button onclick="insertMarkdown('`')" class="icon-btn md-btn" title="Inline Code">C</button>
+
+                    <!-- Text Input -->
+                    <textarea id="message-input" placeholder="Nachricht eingeben..."></textarea>
+                    
+                    <!-- Send Button -->
+                    <button onclick="sendMessage()" class="send-btn">➤</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Video Call Overlay -->
+    <div id="video-call-overlay" class="overlay" style="display:none;">
+        <div class="video-container">
+            <video id="remote-video" autoplay playsinline></video>
+            <video id="local-video" autoplay playsinline muted></video>
+            <canvas id="bg-canvas" style="display:none; position:absolute; bottom:20px; right:20px; width:150px; height:100px; border-radius:10px; z-index:10; background:#000; box-shadow:0 5px 15px rgba(0,0,0,0.3);"></canvas>
+            <div class="call-controls">
+                <button onclick="toggleMute()" id="mute-btn" class="control-btn">🎤</button>
+                <button onclick="toggleVideo()" id="video-btn" class="control-btn">📷</button>
+                <button onclick="toggleBgMenu()" id="bg-btn" class="control-btn" title="Hintergrund">🖼️</button>
+                <button onclick="endCall()" class="control-btn hangup-btn">❌</button>
+            </div>
+            <div id="bg-menu" style="display:none; position:absolute; bottom:80px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.8); padding:10px; border-radius:10px; display:flex; gap:10px; z-index:100;">
+                <button onclick="setBg('none')">Aus</button>
+                <button onclick="setBg('blur')">Blur</button>
+                <button onclick="setBg('color', '#330867')">Lila</button>
+                <input type="file" id="bg-upload" accept="image/*" style="display:none" onchange="uploadBg(this)">
+                <button onclick="document.getElementById('bg-upload').click()">Eigenes Bild</button>
+            </div>
+        </div>
+    </div>
+
+    
+    <!-- Offline Message Modal -->
+    <div id="offline-message-modal" class="modal" style="display:none;">
+        <div class="modal-content call-alert">
+            <h3>User ist nicht online</h3>
+            <p>Der User ist momentan offline. Möchtest du stattdessen eine <span id="offline-msg-type">Nachricht</span> hinterlassen?</p>
+            <div class="call-actions">
+                <button id="start-offline-record-btn" class="accept-btn">Aufnehmen 🔴</button>
+                <button onclick="document.getElementById('offline-message-modal').style.display='none'" class="reject-btn">Abbrechen ❌</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recording Modal -->
+    <div id="recording-modal" class="modal" style="display:none;">
+        <div class="modal-content" style="text-align: center;">
+            <h3 id="recording-title">Aufnahme... <span id="recording-time">0:00</span></h3>
+            <video id="offline-video-preview" autoplay muted style="width:100%; max-width:400px; display:none; background:#000; border-radius:10px; margin-bottom:10px;"></video>
+            <div class="call-actions">
+                <button id="stop-offline-record-btn" class="reject-btn" style="width:100%;">Stop & Senden 📤</button>
+                <button onclick="cancelOfflineRecording()" class="reject-btn" style="width:100%; background: #666;">Abbrechen</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Incoming Call Modal -->
+    <div id="incoming-call-modal" class="modal" style="display:none;">
+        <div class="modal-content call-alert">
+            <h3>Eingehender Anruf...</h3>
+            <p id="caller-name">Unbekannt</p>
+            <div class="call-actions">
+                <button onclick="acceptCall()" class="accept-btn">Annehmen 📞</button>
+                <button onclick="rejectCall()" class="reject-btn">Ablehnen ❌</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Code Input Modal -->
+    <div id="code-modal" class="modal" style="display:none;">
+        <div class="modal-content" style="width: 80%; max-width: 800px; height: 70vh;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                <h3 style="margin:0;">Code / Log einfügen</h3>
+                <span class="close" id="close-code-btn" style="cursor:pointer; font-size:1.5rem;">&times;</span>
+            </div>
+            <textarea id="code-textarea" style="width:100%; flex:1; background:#2d2d2d; color:#f8f8f2; font-family:monospace; padding:10px; border:none; resize:none; outline:none;" placeholder="// Code hier einfügen..."></textarea>
+            <div style="margin-top:10px; text-align:right;">
+                <button id="send-code-btn" style="padding:10px 20px; background:var(--primary); color:white; border:none; cursor:pointer;">Senden (Ctrl+Enter)</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Admin Panel Modal -->
+    <div id="admin-modal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeAdmin()">&times;</span>
+            <h2>Benutzerverwaltung</h2>
+            <div class="admin-controls">
+                <input type="text" id="new-user" placeholder="Neuer Username">
+                <input type="password" id="new-pass" placeholder="Passwort">
+                <select id="new-role">
+                    <option value="user">User</option>
+                    <option value="admin">Admin</option>
+                </select>
+                <button onclick="createUser()">Benutzer anlegen</button>
+            </div>
+            <ul id="user-list">
+                <!-- User list -->
+            </ul>
+        </div>
+    </div>
+
+    <!-- Profile Modal -->
+    <div id="profile-modal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeProfile()">&times;</span>
+            <h2>Mein Profil</h2>
+            
+            <div class="profile-section">
+                <label>Status Nachricht</label>
+                <input type="text" id="edit-status" placeholder="Was machst du gerade?">
+            </div>
+
+            <div class="profile-section">
+                <label>Sound & Eingabe</label>
+                <div class="toggle-wrapper">
+                    <label class="switch">
+                        <input type="checkbox" id="sound-toggle" checked onchange="toggleSound(this.checked)">
+                        <span class="slider"></span>
+                    </label>
+                    <span>Sounds aktiv</span>
+                </div>
+                <div class="toggle-wrapper">
+                    <label class="switch">
+                        <input type="checkbox" id="enter-send-toggle" checked onchange="toggleEnterSend(this.checked)">
+                        <span class="slider"></span>
+                    </label>
+                    <span>Enter sendet Nachricht</span>
+                </div>
+                <div class="toggle-wrapper">
+                    <label class="switch">
+                        <input type="checkbox" id="call-debug-toggle" onchange="toggleCallDebug(this.checked)">
+                        <span class="slider"></span>
+                    </label>
+                    <span>Call-Debug aktiv</span>
+                </div>
+            </div>
+
+            <div class="profile-section">
+                <label>Benutzerdaten</label>
+                <input type="text" id="edit-uin" disabled title="ICQ Nummer">
+                <input type="text" id="edit-username" placeholder="Benutzername">
+                <input type="password" id="edit-password" placeholder="Neues Passwort (optional)">
+            </div>
+            
+            <div class="profile-section">
+                <label>Avatar & Hintergrund</label>
+                <input type="file" id="edit-avatar" accept="image/*" title="Avatar ändern">
+                
+                <p style="font-size:0.8rem; margin-top:10px;">Chat Hintergrund:</p>
+                <div id="bg-options" class="bg-grid">
+                    <!-- JS fills this -->
+                </div>
+                <input type="file" id="edit-bg-upload" accept="image/*" title="Eigenes Bild">
+            </div>
+
+            <button onclick="saveProfile()" style="width:100%;">Speichern</button>
+        </div>
+    </div>
+
+    <!-- Sounds -->
+    <audio id="sound-uhoh" src="uhoh.mp3"></audio>
+    <audio id="sound-msg" src="message.mp3"></audio>
+    <audio id="sound-ring" src="ringtone.mp3" loop></audio>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
+    <script src="bg-script.js"></script>
+    <script src="app.js?v=40"></script>
+</body>
+</html>

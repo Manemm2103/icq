@@ -1,0 +1,11 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+data
+chat.db
+call-debug.log
+output.log
+public/uploads
+public/backgrounds
+patch_*.js
