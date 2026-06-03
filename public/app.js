@@ -74,9 +74,16 @@ function toggleSound(enabled) {
 function restoreSession(user) {
     currentUser = user;
     document.getElementById('my-username').textContent = currentUser.username;
-    if (Notification.permission === 'default') document.getElementById('enable-push-btn').style.display = 'inline-block';
-    registerServiceWorkerAndPush();
-    registerServiceWorkerAndPush();
+
+    const pushButton = document.getElementById('enable-push-btn');
+    if (typeof Notification !== 'undefined' && pushButton && Notification.permission === 'default') {
+        pushButton.style.display = 'inline-block';
+    }
+
+    if ('serviceWorker' in navigator && 'PushManager' in window) {
+        registerServiceWorkerAndPush();
+    }
+
     // Set my avatar
     document.getElementById('my-avatar').style.backgroundImage = `url('/uploads/${user.avatar}')`;
 
@@ -144,6 +151,8 @@ document.getElementById('username').addEventListener('keydown', function(e) {
 async function login() {
     const username = document.getElementById('username').value.trim();
     const password = document.getElementById('password').value;
+    const loginError = document.getElementById('login-error');
+    loginError.textContent = '';
 
     try {
         const res = await axios.post('/api/login', { username, password });
@@ -153,7 +162,12 @@ async function login() {
             restoreSession(user);
         }
     } catch (err) {
-        document.getElementById('login-error').textContent = "Falscher Benutzername oder Passwort!";
+        console.error('Login client error', err);
+        if (err.response && err.response.status === 401) {
+            loginError.textContent = "Falscher Benutzername oder Passwort!";
+        } else {
+            loginError.textContent = "Login war erfolgreich, aber die App konnte danach nicht sauber starten.";
+        }
     }
 }
 
