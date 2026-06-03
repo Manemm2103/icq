@@ -716,10 +716,32 @@ app.post('/api/subscribe', (req, res) => {
 
 // --- Socket.io Logic ---
 const onlineUsers = new Map(); // socketId -> userId
+const userSockets = new Map(); // userId -> Set(socketId)
+
+function addUserSocket(userId, socketId) {
+    const sockets = userSockets.get(userId) || new Set();
+    sockets.add(socketId);
+    userSockets.set(userId, sockets);
+}
+
+function removeUserSocket(userId, socketId) {
+    const sockets = userSockets.get(userId);
+    if (!sockets) return;
+    sockets.delete(socketId);
+    if (!sockets.size) userSockets.delete(userId);
+}
+
+function getPreferredSocketId(userId, excludeSocketId = null) {
+    const sockets = userSockets.get(userId);
+    if (!sockets || !sockets.size) return null;
+    const candidates = [...sockets].filter(id => id !== excludeSocketId);
+    return candidates.length ? candidates[candidates.length - 1] : null;
+}
 
 io.on('connection', (socket) => {
     socket.on('join', (userId) => {
         onlineUsers.set(socket.id, userId);
+        addUserSocket(userId, socket.id);
         socket.join(`user_${userId}`);
 
         const user = db.prepare('SELECT status, custom_status FROM users WHERE id = ?').get(userId);
@@ -826,12 +848,31 @@ io.on('connection', (socket) => {
 
     // --- WebRTC Signaling ---
     socket.on('call_user', (data) => {
-        writeCallDebugLog({ type: 'server', event: 'call_user', details: { from: data.from, to: data.userToCall, video: data.video } });
-        io.to(`user_${data.userToCall}`).emit('call_user', { 
-            signal: data.signalData, 
-            from: data.from,
-            video: data.video 
+        const targetSocketId = getPreferredSocketId(data.userToCall, socket.id);
+        writeCallDebugLog({
+            type: 'server',
+            event: 'call_user',
+            details: { from: data.from, to: data.userToCall, video: data.video, targetSocketId }
         });
+        if (targetSocketId) {
+            io.to(targetSocketId).emit('call_user', {
+                signal: data.signalData,
+                from: data.from,
+                video: data.video,
+                fromSocketId: socket.id
+            });
+            io.to(socket.id).emit('call_routed', {
+                userToCall: data.userToCall,
+                targetSocketId
+            });
+        } else {
+            io.to(`user_${data.userToCall}`).emit('call_user', {
+                signal: data.signalData,
+                from: data.from,
+                video: data.video,
+                fromSocketId: socket.id
+            });
+        }
 
         const caller = db.prepare('SELECT username FROM users WHERE id = ?').get(data.from);
         const callerName = caller ? caller.username : 'Unbekannt';
@@ -851,29 +892,52 @@ io.on('connection', (socket) => {
     });
 
     socket.on('answer_call', (data) => {
-        writeCallDebugLog({ type: 'server', event: 'answer_call', details: { to: data.to } });
-        io.to(`user_${data.to}`).emit('call_accepted', data.signal);
+        const targetSocketId = data.toSocketId || getPreferredSocketId(data.to, socket.id);
+        writeCallDebugLog({ type: 'server', event: 'answer_call', details: { to: data.to, targetSocketId } });
+        if (targetSocketId) {
+            io.to(targetSocketId).emit('call_accepted', {
+                signal: data.signal,
+                fromSocketId: socket.id
+            });
+            return;
+        }
+        io.to(`user_${data.to}`).emit('call_accepted', {
+            signal: data.signal,
+            fromSocketId: socket.id
+        });
     });
 
     socket.on('ice_candidate', (data) => {
+        const targetSocketId = data.toSocketId || getPreferredSocketId(data.to, socket.id);
         writeCallDebugLog({
             type: 'server',
             event: 'ice_candidate',
             details: {
                 to: data.to,
+                targetSocketId,
                 ...parseIceCandidateDetails(data.candidate)
             }
         });
+        if (targetSocketId) {
+            io.to(targetSocketId).emit('ice_candidate', data.candidate);
+            return;
+        }
         io.to(`user_${data.to}`).emit('ice_candidate', data.candidate);
     });
 
     socket.on('end_call', (data) => {
-        writeCallDebugLog({ type: 'server', event: 'end_call', details: { to: data.to } });
+        const targetSocketId = data.toSocketId || getPreferredSocketId(data.to, socket.id);
+        writeCallDebugLog({ type: 'server', event: 'end_call', details: { to: data.to, targetSocketId } });
+        if (targetSocketId) {
+            io.to(targetSocketId).emit('end_call');
+            return;
+        }
         io.to(`user_${data.to}`).emit('end_call');
     });
 
     socket.on('disconnect', () => {
         const userId = onlineUsers.get(socket.id);
+        if (userId) removeUserSocket(userId, socket.id);
         writeCallDebugLog({ type: 'server', event: 'disconnect', details: { userId: userId || null, socketId: socket.id } });
         if (userId) {
             onlineUsers.delete(socket.id);

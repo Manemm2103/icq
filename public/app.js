@@ -22,7 +22,7 @@ let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
 let callDebugEnabled = false;
-let runtimeVersionLabel = 'Version 2026-06-03.12';
+let runtimeVersionLabel = 'Version 2026-06-03.13';
 let currentChatMessages = [];
 let activeSearchTab = 'text';
 
@@ -1146,7 +1146,8 @@ async function callDebugLog(event, details = {}) {
         'ice_candidate_add_error',
         'camera_switch_error',
         'selected_candidate_pair',
-        'selected_candidate_pair_error'
+        'selected_candidate_pair_error',
+        'call_routed'
     ]);
     if (!callDebugEnabled && !alwaysLoggedEvents.has(event)) return;
     console.log('[call-debug]', event, details);
@@ -1289,6 +1290,7 @@ let localStream = null;
 let peerConnection = null;
 let incomingCallData = null;
 let activeCallPartnerId = null;
+let activeCallTargetSocketId = null;
 let remoteStream = null;
 let pendingIceCandidates = [];
 let currentFacingMode = 'user';
@@ -1355,6 +1357,7 @@ async function startCall(video = true) {
     try {
         activeCallHasVideo = !!video;
         currentFacingMode = 'user';
+        activeCallTargetSocketId = null;
         resetFloatingPreviewPosition();
         updateCallOverlayMeta(currentChatPartner.username, video ? 'Videoanruf wird aufgebaut...' : 'Sprachanruf wird aufgebaut...');
         updateCallControls();
@@ -1413,6 +1416,7 @@ async function startCall(video = true) {
 socket.on('call_user', (data) => {
     // data: { signal, from, video }
     incomingCallData = data;
+    activeCallTargetSocketId = data.fromSocketId || null;
     callDebugLog('incoming_call', { from: data.from, video: data.video });
     const caller = allUsersCache.find(u => u.id === data.from);
     callerNameSpan.textContent = (caller ? caller.username : "Unbekannt") + (data.video ? " (Video)" : " (Audio)");
@@ -1432,6 +1436,7 @@ async function acceptCall() {
     if (soundRing) { soundRing.pause(); soundRing.currentTime = 0; }
     videoOverlay.style.display = 'flex';
     activeCallPartnerId = incomingCallData ? incomingCallData.from : null;
+    activeCallTargetSocketId = incomingCallData ? (incomingCallData.fromSocketId || null) : null;
     
     // Check if incoming call has video to decide on our constraints (try to match)
     // For simplicity, we match: if they call audio-only, we answer audio-only.
@@ -1473,7 +1478,8 @@ async function acceptCall() {
         
         socket.emit('answer_call', {
             signal: answer,
-            to: incomingCallData.from
+            to: incomingCallData.from,
+            toSocketId: incomingCallData.fromSocketId || null
         });
 
     } catch (err) {
@@ -1491,9 +1497,10 @@ function rejectCall() {
     callDebugLog('reject_call', { from: incomingCallData ? incomingCallData.from : null });
     incomingCallModal.style.display = 'none';
     if (soundRing) { soundRing.pause(); soundRing.currentTime = 0; }
-    socket.emit('end_call', { to: incomingCallData.from });
+    socket.emit('end_call', { to: incomingCallData.from, toSocketId: incomingCallData.fromSocketId || null });
     incomingCallData = null;
     activeCallPartnerId = null;
+    activeCallTargetSocketId = null;
 }
 
 async function flushPendingIceCandidates() {
@@ -1510,14 +1517,21 @@ async function flushPendingIceCandidates() {
 }
 
 // Call Accepted (Initiator receives answer)
-socket.on('call_accepted', async (signal) => {
-    await callDebugLog('call_accepted', { type: signal ? signal.type : null });
+socket.on('call_accepted', async (payload) => {
+    const signal = payload && payload.signal ? payload.signal : payload;
+    activeCallTargetSocketId = payload && payload.fromSocketId ? payload.fromSocketId : activeCallTargetSocketId;
+    await callDebugLog('call_accepted', { type: signal ? signal.type : null, fromSocketId: activeCallTargetSocketId });
     if (peerConnection) {
         await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
         updateCallOverlayMeta(currentChatPartner ? currentChatPartner.username : 'Anruf', activeCallHasVideo ? 'Verbunden' : 'Sprachverbindung aktiv');
         await callDebugLog('remote_description_set', { side: 'caller', type: signal ? signal.type : null });
         await flushPendingIceCandidates();
     }
+});
+
+socket.on('call_routed', async (data) => {
+    activeCallTargetSocketId = data && data.targetSocketId ? data.targetSocketId : null;
+    await callDebugLog('call_routed', data || {});
 });
 
 // ICE Candidates
@@ -1589,12 +1603,16 @@ function endCall(isRemote = false) {
     if (!isRemote) {
         // Notify other side if *I* hung up
         if (activeCallPartnerId || currentChatPartner) {
-            socket.emit('end_call', { to: activeCallPartnerId || currentChatPartner.id });
+            socket.emit('end_call', {
+                to: activeCallPartnerId || currentChatPartner.id,
+                toSocketId: activeCallTargetSocketId || incomingCallData?.fromSocketId || null
+            });
         }
     }
     
     incomingCallData = null;
     activeCallPartnerId = null;
+    activeCallTargetSocketId = null;
 }
 
 function createPeerConnection() {
@@ -1613,10 +1631,12 @@ function createPeerConnection() {
             const targetId = currentChatPartner ? currentChatPartner.id : incomingCallData?.from;
             callDebugLog('ice_candidate_local', {
                 to: targetId,
+                toSocketId: activeCallTargetSocketId || incomingCallData?.fromSocketId || null,
                 ...parseIceCandidateDetails(event.candidate)
             });
             socket.emit('ice_candidate', {
                 to: targetId,
+                toSocketId: activeCallTargetSocketId || incomingCallData?.fromSocketId || null,
                 candidate: event.candidate
             });
         } else {
