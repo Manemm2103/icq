@@ -22,7 +22,9 @@ let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
 let callDebugEnabled = false;
-let runtimeVersionLabel = 'Version 2026-06-03.9';
+let runtimeVersionLabel = 'Version 2026-06-03.10';
+let currentChatMessages = [];
+let activeSearchTab = 'text';
 
 const soundUhOh = document.getElementById('sound-uhoh');
 const soundRing = document.getElementById('sound-ring');
@@ -30,6 +32,10 @@ const soundMsg = document.getElementById('sound-msg');
 const adminBtn = document.getElementById('admin-btn');
 const adminModal = document.getElementById('admin-modal');
 const profileModal = document.getElementById('profile-modal');
+const chatSearchBtn = document.getElementById('chat-search-btn');
+const chatSearchPanel = document.getElementById('chat-search-panel');
+const chatSearchInput = document.getElementById('chat-search-input');
+const chatSearchResults = document.getElementById('chat-search-results');
 
 // --- Auth ---
 
@@ -588,9 +594,10 @@ socket.on('receive_message', (msg) => {
 
     if (currentChatPartner && 
         (msg.sender_id === currentChatPartner.id || msg.sender_id === currentUser.id)) {
+        upsertCurrentChatMessage(msg);
         // Tell server it's read immediately
         if (msg.sender_id !== currentUser.id) {
-            fetch('/api/history/' + currentUser.id + '/' + currentChatPartner.id); // Hack to trigger mark as read without full reload
+            fetch('/api/history/' + currentUser.id + '/' + currentChatPartner.id);
         }
         appendMessage(msg);
         scrollToBottom();
@@ -602,6 +609,15 @@ socket.on('receive_message', (msg) => {
         renderUserList();
         updateGlobalUnreadBadge();
     }
+});
+
+socket.on('message_status', (message) => {
+    const index = currentChatMessages.findIndex((item) => Number(item.id) === Number(message.id));
+    if (index >= 0) {
+        currentChatMessages[index] = { ...currentChatMessages[index], ...message };
+    }
+    updateMessageStatusUi(message);
+    if (chatSearchPanel.style.display === 'flex') updateChatSearch();
 });
 
 socket.on('status_update', (data) => {
@@ -643,6 +659,130 @@ function showToast(title, body, user) {
     setTimeout(() => { toast.classList.add('hide'); setTimeout(() => toast.remove(), 300); }, 4000);
 }
 
+function toggleChatSearch() {
+    if (!currentChatPartner) return;
+    const shouldOpen = chatSearchPanel.style.display === 'none' || chatSearchPanel.style.display === '';
+    chatSearchPanel.style.display = shouldOpen ? 'flex' : 'none';
+    if (shouldOpen) {
+        chatSearchInput.focus();
+        updateChatSearch();
+    }
+}
+
+function closeChatSearch() {
+    chatSearchPanel.style.display = 'none';
+}
+
+function setChatSearchTab(tab) {
+    activeSearchTab = tab;
+    document.querySelectorAll('.search-tab').forEach((button) => {
+        button.classList.toggle('active', button.dataset.tab === tab);
+    });
+    updateChatSearch();
+}
+
+function classifyMessageForSearch(msg) {
+    const isLink = msg.type === 'text' && /https?:\/\/[^\s]+/i.test(msg.content || '');
+    const isMedia = ['image', 'video', 'audio'].includes(msg.type);
+    const isDoc = !['text', 'code', 'image', 'video', 'audio'].includes(msg.type);
+    return { isLink, isMedia, isDoc };
+}
+
+function getSearchableText(msg) {
+    if (msg.type === 'text' || msg.type === 'code') return msg.content || '';
+    if (msg.filename) return msg.filename;
+    return msg.content || '';
+}
+
+function formatSearchPreview(msg) {
+    if (msg.type === 'image') return 'Bild';
+    if (msg.type === 'video') return 'Video';
+    if (msg.type === 'audio') return 'Audio';
+    if (msg.type === 'code') return msg.content || 'Code';
+    if (msg.filename) return msg.filename;
+    return msg.content || '';
+}
+
+function updateChatSearch() {
+    if (!chatSearchResults) return;
+    if (!currentChatPartner) {
+        chatSearchResults.innerHTML = '<div class="search-empty">Kein Chat geöffnet.</div>';
+        return;
+    }
+
+    const term = (chatSearchInput.value || '').trim().toLowerCase();
+    const results = currentChatMessages.filter((msg) => {
+        const { isLink, isMedia, isDoc } = classifyMessageForSearch(msg);
+        if (activeSearchTab === 'media' && !isMedia) return false;
+        if (activeSearchTab === 'links' && !isLink) return false;
+        if (activeSearchTab === 'docs' && !isDoc) return false;
+        if (activeSearchTab === 'text' && msg.type !== 'text' && msg.type !== 'code') return false;
+        if (!term) return true;
+        return getSearchableText(msg).toLowerCase().includes(term);
+    });
+
+    if (!results.length) {
+        chatSearchResults.innerHTML = '<div class="search-empty">Keine Treffer in diesem Bereich.</div>';
+        return;
+    }
+
+    chatSearchResults.innerHTML = results.slice().reverse().map((msg) => {
+        const title = new Date(msg.timestamp).toLocaleString([], { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        return `
+            <button class="search-result-item" onclick="jumpToMessage(${msg.id})">
+                <div class="search-result-title">${title}</div>
+                <div class="search-result-snippet">${escapeHtml(formatSearchPreview(msg).substring(0, 140))}</div>
+            </button>
+        `;
+    }).join('');
+}
+
+function jumpToMessage(messageId) {
+    closeChatSearch();
+    scrollToMessage(messageId);
+}
+
+function upsertCurrentChatMessage(msg) {
+    const index = currentChatMessages.findIndex((item) => Number(item.id) === Number(msg.id));
+    if (index >= 0) {
+        currentChatMessages[index] = { ...currentChatMessages[index], ...msg };
+    } else {
+        currentChatMessages.push(msg);
+        currentChatMessages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    }
+    if (chatSearchPanel.style.display === 'flex') updateChatSearch();
+}
+
+function renderCurrentChatMessages() {
+    messagesDiv.innerHTML = '';
+    if (!currentChatMessages.length) {
+        messagesDiv.innerHTML = '<div class="empty-state"><p>Keine Nachrichten hier... 🦗</p></div>';
+        return;
+    }
+    currentChatMessages.forEach(appendMessage);
+}
+
+function getMessageStatusMarkup(msg) {
+    if (msg.sender_id !== currentUser.id) return '';
+    const isRead = Number(msg.is_read) === 1;
+    const isDelivered = !!msg.delivered_at || isRead;
+    const statusClass = isRead ? 'read' : (isDelivered ? 'delivered' : 'single');
+    return `
+        <span class="message-status ${statusClass}" data-message-status-id="${msg.id}" title="${isRead ? 'Gelesen' : (isDelivered ? 'Zugestellt' : 'Gesendet')}">
+            <span class="tick">✓</span><span class="tick">✓</span>
+        </span>
+    `;
+}
+
+function updateMessageStatusUi(message) {
+    const statusEl = document.querySelector(`[data-message-status-id="${message.id}"]`);
+    if (!statusEl) return;
+    const isRead = Number(message.is_read) === 1;
+    const isDelivered = !!message.delivered_at || isRead;
+    statusEl.className = `message-status ${isRead ? 'read' : (isDelivered ? 'delivered' : 'single')}`;
+    statusEl.title = isRead ? 'Gelesen' : (isDelivered ? 'Zugestellt' : 'Gesendet');
+}
+
 // --- Chat Logic ---
 
 async function openChat(user) {
@@ -666,8 +806,15 @@ async function openChat(user) {
     
     unreadCounts[user.id] = 0;
     saveUnread();
-        renderUserList();
-        updateGlobalUnreadBadge();
+    renderUserList();
+    updateGlobalUnreadBadge();
+    if (chatSearchBtn) chatSearchBtn.style.display = 'inline-block';
+    closeChatSearch();
+    chatSearchInput.value = '';
+    activeSearchTab = 'text';
+    document.querySelectorAll('.search-tab').forEach((button) => {
+        button.classList.toggle('active', button.dataset.tab === 'text');
+    });
 
     document.body.classList.add('chat-open');
     document.getElementById('sidebar').style.transform = "translateX(-100%)";
@@ -675,13 +822,17 @@ async function openChat(user) {
 
     messagesDiv.innerHTML = '';
     const res = await axios.get(`/api/history/${currentUser.id}/${user.id}`);
-    res.data.forEach(appendMessage);
+    currentChatMessages = res.data;
+    renderCurrentChatMessages();
     scrollToBottom();
 }
 
 function showContactList() {
     currentChatPartner = null;
+    currentChatMessages = [];
     renderUserList();
+    if (chatSearchBtn) chatSearchBtn.style.display = 'none';
+    closeChatSearch();
     document.body.classList.remove('chat-open');
     document.getElementById('sidebar').style.transform = "translateX(0)";
     document.getElementById('chat-area').style.transform = "translateX(100%)";
@@ -712,6 +863,8 @@ function formatText(text) {
 }
 
 function appendMessage(msg) {
+    const existing = document.getElementById(`msg-${msg.id}`);
+    if (existing) existing.remove();
     const div = document.createElement('div');
     const isMe = msg.sender_id === currentUser.id;
     div.className = `message ${isMe ? 'sent' : 'received'}`;
@@ -776,6 +929,7 @@ function appendMessage(msg) {
     }
 
     const time = new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    const statusHtml = getMessageStatusMarkup(msg);
     
     div.id = `msg-${msg.id}`;
     div.innerHTML = `
@@ -783,6 +937,7 @@ function appendMessage(msg) {
         <div class="msg-content">${contentHtml}</div>
         <div class="msg-meta">
             <span class="timestamp">${time}</span>
+            ${statusHtml}
             <span class="copy-icon" title="Kopieren">
                 <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>

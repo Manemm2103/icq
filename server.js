@@ -119,6 +119,22 @@ function sendPushToUser(userId, payload) {
     }
 }
 
+function isUserOnline(userId) {
+    return [...onlineUsers.values()].some((value) => Number(value) === Number(userId));
+}
+
+function emitMessageStatus(message) {
+    const payload = {
+        id: message.id,
+        sender_id: Number(message.sender_id),
+        receiver_id: Number(message.receiver_id),
+        delivered_at: message.delivered_at || null,
+        is_read: Number(message.is_read || 0)
+    };
+    io.to(`user_${message.sender_id}`).emit('message_status', payload);
+    io.to(`user_${message.receiver_id}`).emit('message_status', payload);
+}
+
 function normalizeUsernameInput(value) {
     const normalized = typeof value === 'string'
         ? value.normalize('NFKC').replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, ' ').trim()
@@ -217,6 +233,7 @@ db.exec(`
         receiver_id INTEGER,
         content TEXT,
         type TEXT DEFAULT 'text',
+        delivered_at DATETIME,
         is_read INTEGER DEFAULT 0,
         is_encrypted INTEGER DEFAULT 0, -- New: Flag for E2EE
         filename TEXT,
@@ -240,6 +257,10 @@ try {
     }
     
     const msgCols = db.prepare("PRAGMA table_info(messages)").all();
+    if (!msgCols.some(c => c.name === 'delivered_at')) {
+        db.prepare("ALTER TABLE messages ADD COLUMN delivered_at DATETIME").run();
+        console.log("Migration: Added delivered_at to messages");
+    }
     if (!msgCols.some(c => c.name === 'is_read')) {
         db.prepare("ALTER TABLE messages ADD COLUMN is_read INTEGER DEFAULT 0").run();
         console.log("Migration: Added is_read to messages");
@@ -318,7 +339,7 @@ app.delete('/api/call-debug', (req, res) => {
 
 app.get('/api/runtime-config', (req, res) => {
     res.json({
-        version: 'Version 2026-06-03.9',
+        version: 'Version 2026-06-03.10',
         rtcConfig: {
             iceServers: buildRtcIceServers()
         }
@@ -560,9 +581,37 @@ app.delete('/api/admin/users/:id', (req, res) => {
 
 // Chat History
 app.get('/api/history/:userId/:contactId', (req, res) => {
-    const { userId, contactId } = req.params;
-    
-    // Join with self to get reply content
+    const userId = Number(req.params.userId);
+    const contactId = Number(req.params.contactId);
+    const now = new Date().toISOString();
+
+    try {
+        const pendingStatuses = db.prepare(`
+            SELECT id, sender_id, receiver_id, delivered_at, is_read
+            FROM messages
+            WHERE receiver_id = ? AND sender_id = ? AND (is_read = 0 OR delivered_at IS NULL)
+        `).all(userId, contactId);
+
+        if (pendingStatuses.length) {
+            db.prepare(`
+                UPDATE messages
+                SET is_read = 1,
+                    delivered_at = COALESCE(delivered_at, ?)
+                WHERE receiver_id = ? AND sender_id = ? AND (is_read = 0 OR delivered_at IS NULL)
+            `).run(now, userId, contactId);
+
+            pendingStatuses.forEach((message) => {
+                emitMessageStatus({
+                    ...message,
+                    delivered_at: message.delivered_at || now,
+                    is_read: 1
+                });
+            });
+        }
+    } catch (e) {
+        console.error(e);
+    }
+
     const messages = db.prepare(`
         SELECT m.*, 
                r.content as reply_content, 
@@ -575,12 +624,6 @@ app.get('/api/history/:userId/:contactId', (req, res) => {
            OR (m.sender_id = ? AND m.receiver_id = ?)
         ORDER BY m.timestamp ASC
     `).all(userId, contactId, contactId, userId);
-    
-    
-    // Mark as read when fetching history
-    try {
-        db.prepare('UPDATE messages SET is_read = 1 WHERE receiver_id = ? AND sender_id = ?').run(userId, contactId);
-    } catch(e) { console.error(e); }
 
     res.json(messages);
 });
@@ -658,6 +701,23 @@ io.on('connection', (socket) => {
         socket.emit('unread_sync', unreadMap);
         writeCallDebugLog({ type: 'server', event: 'join', details: { userId, socketId: socket.id } });
 
+        const now = new Date().toISOString();
+        const pendingDelivered = db.prepare(`
+            SELECT id, sender_id, receiver_id, delivered_at, is_read
+            FROM messages
+            WHERE receiver_id = ? AND delivered_at IS NULL
+        `).all(Number(userId));
+        if (pendingDelivered.length) {
+            db.prepare('UPDATE messages SET delivered_at = ? WHERE receiver_id = ? AND delivered_at IS NULL').run(now, Number(userId));
+            pendingDelivered.forEach((message) => {
+                emitMessageStatus({
+                    ...message,
+                    delivered_at: now,
+                    is_read: message.is_read
+                });
+            });
+        }
+
     });
 
     
@@ -680,9 +740,10 @@ io.on('connection', (socket) => {
 
     socket.on('send_message', (data) => {
         const { senderId, receiverId, content, type, filename, replyToId, isEncrypted } = data;
+        const deliveredAt = isUserOnline(receiverId) ? new Date().toISOString() : null;
         
-        const stmt = db.prepare('INSERT INTO messages (sender_id, receiver_id, content, type, filename, reply_to_id, is_encrypted) VALUES (?, ?, ?, ?, ?, ?, ?)');
-        const info = stmt.run(senderId, receiverId, content, type || 'text', filename || null, replyToId || null, isEncrypted ? 1 : 0);
+        const stmt = db.prepare('INSERT INTO messages (sender_id, receiver_id, content, type, filename, reply_to_id, is_encrypted, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+        const info = stmt.run(senderId, receiverId, content, type || 'text', filename || null, replyToId || null, isEncrypted ? 1 : 0, deliveredAt);
         
         // Fetch reply details if needed
         let replyData = null;
@@ -697,6 +758,8 @@ io.on('connection', (socket) => {
             content,
             type: type || 'text',
             filename,
+            delivered_at: deliveredAt,
+            is_read: 0,
             is_encrypted: isEncrypted ? 1 : 0,
             reply_to_id: replyToId,
             reply_content: replyData?.content,
