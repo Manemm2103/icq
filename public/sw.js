@@ -6,8 +6,10 @@ self.addEventListener('push', e => {
     self.registration.showNotification(data.title, {
         body: data.body,
         icon: data.icon || '/icon.png',
-        vibrate: [200, 100, 200, 100, 200, 100, 200], // vibration pattern
-        data: { url: '/' } // Store URL to open later
+        vibrate: [200, 100, 200, 100, 200, 100, 200],
+        tag: data.tag,
+        requireInteraction: !!data.requireInteraction,
+        data: data.data || { url: '/' }
     });
 });
 
@@ -16,16 +18,17 @@ self.addEventListener('notificationclick', e => {
     
     e.waitUntil(
         clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windowClients => {
+            const targetUrl = (e.notification.data && e.notification.data.url) ? e.notification.data.url : '/';
             // Check if app is already open and focus it
             for (let i = 0; i < windowClients.length; i++) {
                 const client = windowClients[i];
-                if (client.url === '/' && 'focus' in client) {
+                if (client.url.includes(targetUrl) && 'focus' in client) {
                     return client.focus();
                 }
             }
             // If not open, open a new window
             if (clients.openWindow) {
-                return clients.openWindow('/');
+                return clients.openWindow(targetUrl);
             }
         })
     );

@@ -1,5 +1,13 @@
 window.bgMode = localStorage.getItem('icq_bg_mode') || 'none'; 
-let bgColor = localStorage.getItem('icq_bg_color') || '#330867';
+let bgColor = localStorage.getItem('icq_bg_color') || '#111827';
+if (bgColor === '#330867') {
+    bgColor = '#111827';
+    localStorage.setItem('icq_bg_color', bgColor);
+}
+if (window.bgMode === 'blur') {
+    window.bgMode = 'none';
+    localStorage.setItem('icq_bg_mode', 'none');
+}
 let bgImage = null;
 
 const savedImage = localStorage.getItem('icq_bg_image');
@@ -25,6 +33,9 @@ function toggleBgMenu() {
 }
 
 function setBg(mode, value) {
+    if (mode === 'blur') {
+        mode = 'none';
+    }
     window.bgMode = mode;
     localStorage.setItem('icq_bg_mode', mode);
 
@@ -90,6 +101,7 @@ async function startSegmentation() {
     if (isSegmenting || typeof localStream === 'undefined' || !localStream) return;
     const video = document.getElementById('local-video');
     if (!video) return;
+    if (window.bgMode === 'none') return;
     
     isSegmenting = true;
     window.segmentCanvas = document.getElementById('bg-canvas');
@@ -182,12 +194,8 @@ function onResults(results) {
         
         segmentCtx.globalCompositeOperation = 'destination-over';
         
-        if (window.bgMode === 'blur') {
-            segmentCtx.filter = 'blur(15px)';
-            segmentCtx.drawImage(results.image, 0, 0, window.segmentCanvas.width, window.segmentCanvas.height);
-            segmentCtx.filter = 'none';
-        } else if (window.bgMode === 'color') {
-            segmentCtx.fillStyle = bgColor || '#330867';
+        if (window.bgMode === 'color') {
+            segmentCtx.fillStyle = bgColor || '#111827';
             segmentCtx.fillRect(0, 0, window.segmentCanvas.width, window.segmentCanvas.height);
         } else if (window.bgMode === 'image' && bgImage && bgImage.width > 0) {
             const imgRatio = bgImage.width / bgImage.height;

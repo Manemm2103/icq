@@ -97,6 +97,28 @@ function writeCallDebugLog(entry) {
     });
 }
 
+function sendPushToUser(userId, payload) {
+    const subs = db.prepare('SELECT subscription FROM push_subscriptions WHERE user_id = ?').all(userId);
+    for (const subRow of subs) {
+        try {
+            const sub = JSON.parse(subRow.subscription);
+            webpush.sendNotification(sub, JSON.stringify(payload), {
+                vapidDetails: {
+                    subject: 'mailto:hello@icq-modern.com',
+                    publicKey: vapidKeys.publicKey,
+                    privateKey: vapidKeys.privateKey
+                }
+            }).catch(err => {
+                if (err.statusCode === 410 || err.statusCode === 404) {
+                    db.prepare('DELETE FROM push_subscriptions WHERE subscription = ?').run(subRow.subscription);
+                } else {
+                    console.error('Push error:', err);
+                }
+            });
+        } catch (e) {}
+    }
+}
+
 function normalizeUsernameInput(value) {
     const normalized = typeof value === 'string'
         ? value.normalize('NFKC').replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, ' ').trim()
@@ -296,7 +318,7 @@ app.delete('/api/call-debug', (req, res) => {
 
 app.get('/api/runtime-config', (req, res) => {
     res.json({
-        version: 'Version 2026-06-03.4',
+        version: 'Version 2026-06-03.5',
         rtcConfig: {
             iceServers: buildRtcIceServers()
         }
@@ -690,32 +712,14 @@ io.on('connection', (socket) => {
         const sender = db.prepare('SELECT username FROM users WHERE id = ?').get(senderId);
         const senderName = sender ? sender.username : 'Unbekannt';
 
-        const payload = JSON.stringify({
+        const payload = {
             title: `Neue Nachricht von ${senderName}`,
             body: type === 'text' ? content : 'Neue Mediendatei empfangen',
-            icon: '/icq-logo.png'
-        });
-
-        const subs = db.prepare('SELECT subscription FROM push_subscriptions WHERE user_id = ?').all(receiverId);
-        for (let subRow of subs) {
-            try {
-                const sub = JSON.parse(subRow.subscription);
-                webpush.sendNotification(sub, payload, {
-                    vapidDetails: {
-                        subject: 'mailto:hello@icq-modern.com',
-                        publicKey: vapidKeys.publicKey,
-                        privateKey: vapidKeys.privateKey
-                    }
-                }).catch(err => {
-                    if (err.statusCode === 410 || err.statusCode === 404) {
-                        // Delete expired subscription
-                        db.prepare('DELETE FROM push_subscriptions WHERE subscription = ?').run(subRow.subscription);
-                    } else {
-                        console.error('Push error:', err);
-                    }
-                });
-            } catch(e) {}
-        }
+            icon: '/icq-logo.png',
+            tag: `message-${senderId}`,
+            data: { type: 'message', senderId }
+        };
+        sendPushToUser(receiverId, payload);
     
     });
 
@@ -726,6 +730,22 @@ io.on('connection', (socket) => {
             signal: data.signalData, 
             from: data.from,
             video: data.video 
+        });
+
+        const caller = db.prepare('SELECT username FROM users WHERE id = ?').get(data.from);
+        const callerName = caller ? caller.username : 'Unbekannt';
+        sendPushToUser(data.userToCall, {
+            title: data.video ? `Eingehender Videoanruf von ${callerName}` : `Eingehender Sprachanruf von ${callerName}`,
+            body: 'Tippe, um ICQ zu oeffnen.',
+            icon: '/icon.png',
+            tag: `incoming-call-${data.from}`,
+            requireInteraction: true,
+            data: {
+                type: 'incoming_call',
+                from: data.from,
+                video: data.video === true,
+                url: '/'
+            }
         });
     });
 
