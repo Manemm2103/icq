@@ -22,6 +22,7 @@ let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
 let callDebugEnabled = false;
+let runtimeVersionLabel = 'Version 2026-06-03.2';
 
 const soundUhOh = document.getElementById('sound-uhoh');
 const soundRing = document.getElementById('sound-ring');
@@ -33,6 +34,7 @@ const profileModal = document.getElementById('profile-modal');
 // --- Auth ---
 
 window.onload = async () => {
+    await loadRuntimeConfig();
     const savedUser = localStorage.getItem('icq_user');
     const savedSound = localStorage.getItem('icq_sound');
     const savedEnterSend = localStorage.getItem('icq_enter_send');
@@ -988,6 +990,24 @@ function escapeHtml(text) {
     return text.replace(/[&<>"']/g, function(m) { return map[m]; });
 }
 
+async function loadRuntimeConfig() {
+    try {
+        const response = await fetch('/api/runtime-config');
+        if (!response.ok) return;
+        const config = await response.json();
+        if (config && config.rtcConfig && Array.isArray(config.rtcConfig.iceServers)) {
+            rtcConfig = config.rtcConfig;
+        }
+        if (config && config.version) {
+            runtimeVersionLabel = config.version;
+            const versionEl = document.getElementById('build-version-sidebar');
+            if (versionEl) versionEl.textContent = runtimeVersionLabel;
+        }
+    } catch (err) {
+        console.warn('Runtime config load failed', err);
+    }
+}
+
 
 // --- Inactivity Tracking ---
 let lastActivityTime = Date.now();
@@ -1016,20 +1036,10 @@ let remoteStream = null;
 let pendingIceCandidates = [];
 
 // STUN servers (Google's public ones are reliable enough for testing)
-const rtcConfig = {
+let rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        {
-            urls: [
-                'turn:88.133.193.144:3478?transport=udp',
-                'turn:88.133.193.144:3478?transport=tcp',
-                'turn:192.168.4.81:3478?transport=udp',
-                'turn:192.168.4.81:3478?transport=tcp'
-            ],
-            username: 'icqturn',
-            credential: '6ZbcDeubmdpgCDVkWoNoLS+yuIj4PAGS'
-        }
+        { urls: 'stun:stun1.l.google.com:19302' }
     ]
 };
 

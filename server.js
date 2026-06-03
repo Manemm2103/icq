@@ -60,6 +60,28 @@ function loadVapidKeys() {
 const vapidKeys = loadVapidKeys();
 webpush.setVapidDetails('mailto:hello@icq-modern.com', vapidKeys.publicKey, vapidKeys.privateKey);
 
+function buildRtcIceServers() {
+    const iceServers = [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+    ];
+
+    const turnUrls = (process.env.TURN_URLS || '')
+        .split(',')
+        .map(value => value.trim())
+        .filter(Boolean);
+
+    if (turnUrls.length && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+        iceServers.push({
+            urls: turnUrls,
+            username: process.env.TURN_USERNAME,
+            credential: process.env.TURN_CREDENTIAL
+        });
+    }
+
+    return iceServers;
+}
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
@@ -270,6 +292,15 @@ app.delete('/api/call-debug', (req, res) => {
         fs.unlinkSync(callDebugLogPath);
     }
     res.json({ ok: true });
+});
+
+app.get('/api/runtime-config', (req, res) => {
+    res.json({
+        version: 'Version 2026-06-03.2',
+        rtcConfig: {
+            iceServers: buildRtcIceServers()
+        }
+    });
 });
 
 // Login

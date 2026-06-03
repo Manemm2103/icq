@@ -49,6 +49,9 @@ Environment variables:
 - `APP_PORT`
 - `VAPID_PUBLIC_KEY`
 - `VAPID_PRIVATE_KEY`
+- `TURN_URLS`
+- `TURN_USERNAME`
+- `TURN_CREDENTIAL`
 
 ### Example values
 
@@ -56,6 +59,9 @@ Environment variables:
 APP_PORT=3000
 VAPID_PUBLIC_KEY=your_public_key
 VAPID_PRIVATE_KEY=your_private_key
+TURN_URLS=turn:your-domain:3478?transport=udp,turn:your-domain:3478?transport=tcp
+TURN_USERNAME=your_turn_username
+TURN_CREDENTIAL=your_turn_password
 ```
 
 ### Reverse proxy
@@ -75,4 +81,5 @@ If you publish the app behind Nginx Proxy Manager or another reverse proxy, poin
 
 - The SQLite database is persisted via the named volume `icq_data`.
 - Uploaded files and background assets are persisted in the same volume.
-- TURN/STUN configuration is currently embedded in `public/app.js`. Adjust it to your target environment if needed.
+- TURN/STUN configuration is now served at runtime from the server environment.
+- For iPhone/mobile reliability, set `TURN_URLS`, `TURN_USERNAME`, and `TURN_CREDENTIAL` on the target server.
