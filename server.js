@@ -82,6 +82,29 @@ function buildRtcIceServers() {
     return iceServers;
 }
 
+function buildRtcConfig() {
+    const iceServers = buildRtcIceServers();
+    const iceTransportPolicy = process.env.RTC_ICE_TRANSPORT_POLICY || (process.env.TURN_URLS ? 'relay' : 'all');
+    return {
+        iceServers,
+        iceTransportPolicy
+    };
+}
+
+function parseIceCandidateDetails(candidateLike) {
+    const raw = candidateLike?.candidate || '';
+    const typeMatch = raw.match(/\btyp\s+([a-z]+)/i);
+    const protocolMatch = raw.match(/\b(udp|tcp)\b/i);
+    const addressMatch = raw.match(/candidate:\S+\s+\d+\s+\S+\s+\d+\s+([0-9a-fA-F\.:]+)\s+(\d+)/);
+    return {
+        type: candidateLike?.type || (typeMatch ? typeMatch[1] : null),
+        protocol: protocolMatch ? protocolMatch[1].toLowerCase() : null,
+        address: addressMatch ? addressMatch[1] : null,
+        port: addressMatch ? Number(addressMatch[2]) : null,
+        sdpMid: candidateLike?.sdpMid || null
+    };
+}
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
@@ -356,10 +379,8 @@ app.delete('/api/call-debug', (req, res) => {
 
 app.get('/api/runtime-config', (req, res) => {
     res.json({
-        version: 'Version 2026-06-03.11',
-        rtcConfig: {
-            iceServers: buildRtcIceServers()
-        }
+        version: 'Version 2026-06-03.12',
+        rtcConfig: buildRtcConfig()
     });
 });
 
@@ -840,8 +861,7 @@ io.on('connection', (socket) => {
             event: 'ice_candidate',
             details: {
                 to: data.to,
-                candidateType: data.candidate?.type || null,
-                sdpMid: data.candidate?.sdpMid || null
+                ...parseIceCandidateDetails(data.candidate)
             }
         });
         io.to(`user_${data.to}`).emit('ice_candidate', data.candidate);

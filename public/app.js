@@ -22,7 +22,7 @@ let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
 let callDebugEnabled = false;
-let runtimeVersionLabel = 'Version 2026-06-03.11';
+let runtimeVersionLabel = 'Version 2026-06-03.12';
 let currentChatMessages = [];
 let activeSearchTab = 'text';
 
@@ -1038,6 +1038,80 @@ function summarizeTrack(track) {
     };
 }
 
+function parseIceCandidateDetails(candidateLike) {
+    const raw = candidateLike?.candidate || '';
+    const typeMatch = raw.match(/\btyp\s+([a-z]+)/i);
+    const protocolMatch = raw.match(/\b(udp|tcp)\b/i);
+    const addressMatch = raw.match(/candidate:\S+\s+\d+\s+\S+\s+\d+\s+([0-9a-fA-F\.:]+)\s+(\d+)/);
+    return {
+        type: candidateLike?.type || (typeMatch ? typeMatch[1] : null),
+        protocol: protocolMatch ? protocolMatch[1].toLowerCase() : null,
+        address: addressMatch ? addressMatch[1] : null,
+        port: addressMatch ? Number(addressMatch[2]) : null,
+        sdpMid: candidateLike?.sdpMid || null,
+        candidate: raw || null
+    };
+}
+
+async function logSelectedCandidatePairStats(context = 'stats') {
+    if (!peerConnection?.getStats) return;
+    try {
+        const stats = await peerConnection.getStats();
+        let selectedPair = null;
+        let localCandidate = null;
+        let remoteCandidate = null;
+
+        stats.forEach((report) => {
+            if (!selectedPair && report.type === 'transport' && report.selectedCandidatePairId) {
+                selectedPair = stats.get(report.selectedCandidatePairId) || null;
+            }
+        });
+
+        if (!selectedPair) {
+            stats.forEach((report) => {
+                if (!selectedPair && report.type === 'candidate-pair' && (report.selected || report.state === 'succeeded')) {
+                    selectedPair = report;
+                }
+            });
+        }
+
+        if (selectedPair) {
+            localCandidate = stats.get(selectedPair.localCandidateId) || null;
+            remoteCandidate = stats.get(selectedPair.remoteCandidateId) || null;
+        }
+
+        await callDebugLog('selected_candidate_pair', {
+            context,
+            pair: selectedPair ? {
+                state: selectedPair.state || null,
+                nominated: selectedPair.nominated || false,
+                writable: selectedPair.writable || false,
+                bytesSent: selectedPair.bytesSent || 0,
+                bytesReceived: selectedPair.bytesReceived || 0,
+                currentRoundTripTime: selectedPair.currentRoundTripTime || null
+            } : null,
+            localCandidate: localCandidate ? {
+                candidateType: localCandidate.candidateType || null,
+                protocol: localCandidate.protocol || null,
+                address: localCandidate.address || localCandidate.ip || null,
+                port: localCandidate.port || null
+            } : null,
+            remoteCandidate: remoteCandidate ? {
+                candidateType: remoteCandidate.candidateType || null,
+                protocol: remoteCandidate.protocol || null,
+                address: remoteCandidate.address || remoteCandidate.ip || null,
+                port: remoteCandidate.port || null
+            } : null
+        });
+    } catch (err) {
+        await callDebugLog('selected_candidate_pair_error', {
+            context,
+            name: err.name || 'Error',
+            message: err.message || String(err)
+        });
+    }
+}
+
 function summarizeStream(stream) {
     if (!stream) return null;
     return {
@@ -1070,7 +1144,9 @@ async function callDebugLog(event, details = {}) {
         'start_call_error',
         'accept_call_error',
         'ice_candidate_add_error',
-        'camera_switch_error'
+        'camera_switch_error',
+        'selected_candidate_pair',
+        'selected_candidate_pair_error'
     ]);
     if (!callDebugEnabled && !alwaysLoggedEvents.has(event)) return;
     console.log('[call-debug]', event, details);
@@ -1255,7 +1331,8 @@ let rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' }
-    ]
+    ],
+    iceTransportPolicy: 'all'
 };
 
 // Hook into openChat to show/hide call button
@@ -1445,10 +1522,7 @@ socket.on('call_accepted', async (signal) => {
 
 // ICE Candidates
 socket.on('ice_candidate', async (candidate) => {
-    await callDebugLog('ice_candidate_received', {
-        type: candidate ? candidate.type || null : null,
-        sdpMid: candidate ? candidate.sdpMid || null : null
-    });
+    await callDebugLog('ice_candidate_received', parseIceCandidateDetails(candidate));
     if (!peerConnection) {
         pendingIceCandidates.push(candidate);
         return;
@@ -1529,15 +1603,17 @@ function createPeerConnection() {
     remoteStream = new MediaStream();
     remoteVideo.srcObject = remoteStream;
     ensureCallVideoPlayback(remoteVideo, false);
-    callDebugLog('peer_connection_created', { iceServers: rtcConfig.iceServers.map(server => server.urls) });
+    callDebugLog('peer_connection_created', {
+        iceServers: rtcConfig.iceServers.map(server => server.urls),
+        iceTransportPolicy: rtcConfig.iceTransportPolicy || 'all'
+    });
 
     peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
             const targetId = currentChatPartner ? currentChatPartner.id : incomingCallData?.from;
             callDebugLog('ice_candidate_local', {
                 to: targetId,
-                type: event.candidate.type || null,
-                sdpMid: event.candidate.sdpMid || null
+                ...parseIceCandidateDetails(event.candidate)
             });
             socket.emit('ice_candidate', {
                 to: targetId,
@@ -1555,6 +1631,10 @@ function createPeerConnection() {
         if (state === 'connected' || state === 'completed') updateCallOverlayMeta(null, activeCallHasVideo ? 'Verbunden' : 'Sprachverbindung aktiv');
         if (state === 'failed') updateCallOverlayMeta(null, 'Verbindung fehlgeschlagen');
         if (state === 'disconnected') updateCallOverlayMeta(null, 'Verbindung unterbrochen');
+        if (state === 'checking' || state === 'connected' || state === 'completed' || state === 'failed') {
+            setTimeout(() => { logSelectedCandidatePairStats(`ice-${state}-t1`); }, 1000);
+            setTimeout(() => { logSelectedCandidatePairStats(`ice-${state}-t4`); }, 4000);
+        }
     };
     peerConnection.onconnectionstatechange = () => {
         callDebugLog('connection_state', { state: peerConnection.connectionState });
@@ -1591,6 +1671,7 @@ function createPeerConnection() {
                 videoWidth: remoteVideo.videoWidth,
                 videoHeight: remoteVideo.videoHeight
             });
+            logSelectedCandidatePairStats('remote-video-loadedmetadata');
             updateCallOverlayMeta(null, activeCallHasVideo ? 'Gegenuebervideo aktiv' : 'Sprachverbindung aktiv');
             ensureCallVideoPlayback(remoteVideo, false);
         };
