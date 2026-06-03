@@ -4,10 +4,6 @@ if (bgColor === '#330867') {
     bgColor = '#111827';
     localStorage.setItem('icq_bg_color', bgColor);
 }
-if (window.bgMode === 'blur') {
-    window.bgMode = 'none';
-    localStorage.setItem('icq_bg_mode', 'none');
-}
 let bgImage = null;
 
 const savedImage = localStorage.getItem('icq_bg_image');
@@ -21,6 +17,9 @@ window.segmentCanvas = null;
 let segmentCtx = null;
 let camHelper = null;
 let isSegmenting = false;
+let blurCanvas = null;
+let blurCtx = null;
+let blurLevel = 4;
 
 function toggleBgMenu() {
     const menu = document.getElementById('bg-menu');
@@ -33,9 +32,6 @@ function toggleBgMenu() {
 }
 
 function setBg(mode, value) {
-    if (mode === 'blur') {
-        mode = 'none';
-    }
     window.bgMode = mode;
     localStorage.setItem('icq_bg_mode', mode);
 
@@ -107,6 +103,8 @@ async function startSegmentation() {
     window.segmentCanvas = document.getElementById('bg-canvas');
     if (!window.segmentCanvas) return;
     segmentCtx = window.segmentCanvas.getContext('2d');
+    blurCanvas = document.createElement('canvas');
+    blurCtx = blurCanvas.getContext('2d');
     
     const hiddenVideo = document.createElement('video');
     hiddenVideo.srcObject = localStream;
@@ -130,6 +128,8 @@ async function startSegmentation() {
     
     window.segmentCanvas.width = settings.width || 1280;
     window.segmentCanvas.height = settings.height || 720;
+    blurCanvas.width = Math.max(32, Math.round(window.segmentCanvas.width / blurLevel));
+    blurCanvas.height = Math.max(32, Math.round(window.segmentCanvas.height / blurLevel));
 
     camHelper = new Camera(hiddenVideo, {
         onFrame: async () => {
@@ -179,6 +179,36 @@ function stopSegmentation() {
             videoSender.replaceTrack(localStream.getVideoTracks()[0]);
         }
     }
+    blurCanvas = null;
+    blurCtx = null;
+}
+
+function drawCover(ctx, source, targetWidth, targetHeight) {
+    const sourceWidth = source.videoWidth || source.width;
+    const sourceHeight = source.videoHeight || source.height;
+    if (!sourceWidth || !sourceHeight) return;
+
+    const scale = Math.max(targetWidth / sourceWidth, targetHeight / sourceHeight);
+    const drawWidth = sourceWidth * scale;
+    const drawHeight = sourceHeight * scale;
+    const x = (targetWidth - drawWidth) / 2;
+    const y = (targetHeight - drawHeight) / 2;
+    ctx.drawImage(source, x, y, drawWidth, drawHeight);
+}
+
+function drawBlurredBackground(source) {
+    if (!blurCanvas || !blurCtx || !segmentCtx) return;
+
+    blurCtx.save();
+    blurCtx.clearRect(0, 0, blurCanvas.width, blurCanvas.height);
+    blurCtx.imageSmoothingEnabled = true;
+    drawCover(blurCtx, source, blurCanvas.width, blurCanvas.height);
+    blurCtx.restore();
+
+    segmentCtx.save();
+    segmentCtx.imageSmoothingEnabled = true;
+    segmentCtx.drawImage(blurCanvas, 0, 0, blurCanvas.width, blurCanvas.height, 0, 0, window.segmentCanvas.width, window.segmentCanvas.height);
+    segmentCtx.restore();
 }
 
 function onResults(results) {
@@ -187,14 +217,16 @@ function onResults(results) {
     segmentCtx.clearRect(0, 0, window.segmentCanvas.width, window.segmentCanvas.height);
     
     try {
-        segmentCtx.drawImage(results.image, 0, 0, window.segmentCanvas.width, window.segmentCanvas.height);
+        drawCover(segmentCtx, results.image, window.segmentCanvas.width, window.segmentCanvas.height);
         
         segmentCtx.globalCompositeOperation = 'destination-in';
         segmentCtx.drawImage(results.segmentationMask, 0, 0, window.segmentCanvas.width, window.segmentCanvas.height);
         
         segmentCtx.globalCompositeOperation = 'destination-over';
         
-        if (window.bgMode === 'color') {
+        if (window.bgMode === 'blur') {
+            drawBlurredBackground(results.image);
+        } else if (window.bgMode === 'color') {
             segmentCtx.fillStyle = bgColor || '#111827';
             segmentCtx.fillRect(0, 0, window.segmentCanvas.width, window.segmentCanvas.height);
         } else if (window.bgMode === 'image' && bgImage && bgImage.width > 0) {
@@ -219,7 +251,7 @@ function onResults(results) {
             segmentCtx.fillStyle = '#000000';
             segmentCtx.fillRect(0, 0, window.segmentCanvas.width, window.segmentCanvas.height);
         } else {
-            segmentCtx.drawImage(results.image, 0, 0, window.segmentCanvas.width, window.segmentCanvas.height);
+            drawCover(segmentCtx, results.image, window.segmentCanvas.width, window.segmentCanvas.height);
         }
     } catch(e) {
         console.error("Drawing error", e);
