@@ -34,13 +34,42 @@ The app listens on port `3000` inside the container.
 
 ## Portainer stack
 
-1. Push this repository to Git.
-2. Create a new Stack in Portainer from that repository.
-3. Use `docker-compose.yml`.
-4. Set these environment variables in Portainer:
-   - `APP_PORT`
-   - `VAPID_PUBLIC_KEY`
-   - `VAPID_PRIVATE_KEY`
+Use `portainer-stack.yml` when deploying from Git in Portainer.
+
+### Recommended Portainer settings
+
+Repository:
+
+- Repository URL: your Git URL
+- Reference: `refs/heads/main`
+- Compose path: `portainer-stack.yml`
+
+Environment variables:
+
+- `APP_PORT`
+- `VAPID_PUBLIC_KEY`
+- `VAPID_PRIVATE_KEY`
+
+### Example values
+
+```text
+APP_PORT=3000
+VAPID_PUBLIC_KEY=your_public_key
+VAPID_PRIVATE_KEY=your_private_key
+```
+
+### Reverse proxy
+
+If you publish the app behind Nginx Proxy Manager or another reverse proxy, point the proxy host to:
+
+- target host: the Docker host running this stack
+- target port: the value of `APP_PORT`
+
+### Updating in Portainer
+
+1. Push changes to GitHub.
+2. Open the stack in Portainer.
+3. Redeploy the stack from repository.
 
 ## Notes
 

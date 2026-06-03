@@ -1,0 +1,22 @@
+services:
+  icq:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: icq-modern:latest
+    container_name: icq-modern
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATA_DIR: /app/data
+      VAPID_PUBLIC_KEY: "${VAPID_PUBLIC_KEY}"
+      VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY}"
+    volumes:
+      - icq_data:/app/data
+
+volumes:
+  icq_data:
+
