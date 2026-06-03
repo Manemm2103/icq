@@ -83,8 +83,12 @@ function normalizeUsernameInput(value) {
     return /^\d+$/.test(normalized.replace(/\s+/g, '')) ? normalized.replace(/\s+/g, '') : normalized;
 }
 
-function logFailedLogin(rawUsername, normalizedUsername, password) {
+function logFailedLogin(req, rawUsername, normalizedUsername, password) {
     const debug = {
+        event: 'login_failed',
+        ip: req.ip,
+        host: req.headers.host || null,
+        userAgent: req.headers['user-agent'] || null,
         rawUsername,
         normalizedUsername,
         rawLength: rawUsername.length,
@@ -92,7 +96,36 @@ function logFailedLogin(rawUsername, normalizedUsername, password) {
         rawCodePoints: Array.from(rawUsername).map(ch => ch.codePointAt(0)),
         passwordLength: password.length
     };
-    console.warn('Login failed debug:', JSON.stringify(debug));
+    console.warn('LOGIN_DEBUG', JSON.stringify(debug));
+}
+
+function logLoginAttempt(req, rawUsername, normalizedUsername, password) {
+    const debug = {
+        event: 'login_attempt',
+        ip: req.ip,
+        host: req.headers.host || null,
+        userAgent: req.headers['user-agent'] || null,
+        rawUsername,
+        normalizedUsername,
+        rawLength: rawUsername.length,
+        normalizedLength: normalizedUsername.length,
+        passwordLength: password.length
+    };
+    console.log('LOGIN_DEBUG', JSON.stringify(debug));
+}
+
+function logSuccessfulLogin(req, user, normalizedUsername) {
+    const debug = {
+        event: 'login_success',
+        ip: req.ip,
+        host: req.headers.host || null,
+        userAgent: req.headers['user-agent'] || null,
+        normalizedUsername,
+        userId: user.id,
+        matchedUsername: user.username,
+        matchedUin: user.uin
+    };
+    console.log('LOGIN_DEBUG', JSON.stringify(debug));
 }
 
 // Multer storage config
@@ -244,6 +277,7 @@ app.post('/api/login', (req, res) => {
     const rawUsername = typeof req.body?.username === 'string' ? req.body.username : '';
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
     const username = normalizeUsernameInput(rawUsername);
+    logLoginAttempt(req, rawUsername, username, password);
     // Allow login by Username OR UIN
     let user;
     if (/^\d+$/.test(username)) { // If input is numeric, check UIN first
@@ -254,6 +288,7 @@ app.post('/api/login', (req, res) => {
     }
     
     if (user && bcrypt.compareSync(password, user.password)) {
+        logSuccessfulLogin(req, user, username);
         res.json({ 
             success: true, 
             user: { 
@@ -267,7 +302,7 @@ app.post('/api/login', (req, res) => {
             } 
         });
     } else {
-        logFailedLogin(rawUsername, username, password);
+        logFailedLogin(req, rawUsername, username, password);
         res.status(401).json({ success: false, message: 'Falsche Zugangsdaten!' });
     }
 });
