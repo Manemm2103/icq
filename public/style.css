@@ -1387,6 +1387,16 @@ input:checked + .slider:before { transform: translateX(20px); }
     text-align: center;
 }
 
+.chat-search-btn {
+    width: 40px;
+    height: 40px;
+    font-size: 1.45rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
 @media (max-width: 768px) {
     .sidebar-footer-version {
         padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));

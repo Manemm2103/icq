@@ -22,7 +22,7 @@ let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
 let callDebugEnabled = false;
-let runtimeVersionLabel = 'Version 2026-06-03.10';
+let runtimeVersionLabel = 'Version 2026-06-03.11';
 let currentChatMessages = [];
 let activeSearchTab = 'text';
 
@@ -1049,7 +1049,30 @@ function summarizeStream(stream) {
 }
 
 async function callDebugLog(event, details = {}) {
-    if (!callDebugEnabled) return;
+    const alwaysLoggedEvents = new Set([
+        'start_call_requested',
+        'local_stream_ready',
+        'incoming_call',
+        'accept_call_requested',
+        'accept_call_local_stream_ready',
+        'call_accepted',
+        'remote_description_set',
+        'peer_connection_created',
+        'ice_connection_state',
+        'connection_state',
+        'signaling_state',
+        'ice_gathering_state',
+        'remote_track',
+        'remote_track_muted',
+        'remote_track_unmuted',
+        'remote_track_ended',
+        'remote_video_loadedmetadata',
+        'start_call_error',
+        'accept_call_error',
+        'ice_candidate_add_error',
+        'camera_switch_error'
+    ]);
+    if (!callDebugEnabled && !alwaysLoggedEvents.has(event)) return;
     console.log('[call-debug]', event, details);
 
     try {

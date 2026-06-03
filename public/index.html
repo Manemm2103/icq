@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>DRQ</title>
-    <link rel="stylesheet" href="style.css?v=42">
+    <link rel="stylesheet" href="style.css?v=43">
     <script src="/socket.io/socket.io.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <link rel="manifest" href="/manifest.json?v=2">
@@ -49,7 +49,7 @@
             <div class="contact-list" id="contact-list">
                 <!-- Contacts -->
             </div>
-            <div class="build-version sidebar-footer-version" id="build-version-sidebar">Version 2026-06-03.10</div>
+            <div class="build-version sidebar-footer-version" id="build-version-sidebar">Version 2026-06-03.11</div>
         </div>
 
         <div class="chat-area" id="chat-area">
@@ -65,7 +65,7 @@
                     </div>
                 </div>
                 <div class="header-actions" style="margin-left: auto; display: flex; gap: 10px;">
-                    <button id="chat-search-btn" class="icon-btn" style="display:none;" onclick="toggleChatSearch()" title="Im Chat suchen">⌕</button>
+                    <button id="chat-search-btn" class="icon-btn chat-search-btn" style="display:none;" onclick="toggleChatSearch()" title="Im Chat suchen">🔎</button>
                     <button id="call-audio-btn" class="icon-btn" style="display:none;" onclick="startCall(false)" title="Sprachanruf">📞</button>
                     <button id="call-video-btn" class="icon-btn" style="display:none;" onclick="startCall(true)" title="Videoanruf">🎥</button>
                 </div>
@@ -288,6 +288,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
     <script src="bg-script.js?v=5"></script>
-    <script src="app.js?v=48"></script>
+    <script src="app.js?v=49"></script>
 </body>
 </html>

@@ -95,6 +95,25 @@ function writeCallDebugLog(entry) {
     fs.appendFile(callDebugLogPath, line, (err) => {
         if (err) console.error('Call debug log write failed:', err);
     });
+    console.log('CALL_DEBUG', line.trim());
+}
+
+function buildStoredFilename(targetDir, originalName) {
+    const safeBaseName = path.basename(String(originalName || 'datei'))
+        .replace(/[\/\\]/g, '_')
+        .replace(/[\x00-\x1f\x7f]/g, '')
+        .trim() || 'datei';
+    const ext = path.extname(safeBaseName);
+    const stem = ext ? safeBaseName.slice(0, -ext.length) : safeBaseName;
+    let candidate = safeBaseName;
+    let counter = 1;
+
+    while (fs.existsSync(path.join(targetDir, candidate))) {
+        candidate = `${stem} (${counter})${ext}`;
+        counter += 1;
+    }
+
+    return candidate;
 }
 
 function sendPushToUser(userId, payload) {
@@ -192,8 +211,7 @@ function logSuccessfulLogin(req, user, normalizedUsername) {
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + path.extname(file.originalname));
+        cb(null, buildStoredFilename(uploadDir, file.originalname));
     }
 });
 const upload = multer({ storage });
@@ -201,8 +219,7 @@ const upload = multer({ storage });
 const bgStorage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, backgroundsDir),
     filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + path.extname(file.originalname));
+        cb(null, buildStoredFilename(backgroundsDir, file.originalname));
     }
 });
 const bgUpload = multer({ storage: bgStorage });
@@ -339,7 +356,7 @@ app.delete('/api/call-debug', (req, res) => {
 
 app.get('/api/runtime-config', (req, res) => {
     res.json({
-        version: 'Version 2026-06-03.10',
+        version: 'Version 2026-06-03.11',
         rtcConfig: {
             iceServers: buildRtcIceServers()
         }
