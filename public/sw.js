@@ -1,4 +1,12 @@
 
+self.addEventListener('install', () => {
+    self.skipWaiting();
+});
+
+self.addEventListener('activate', event => {
+    event.waitUntil(self.clients.claim());
+});
+
 self.addEventListener('push', e => {
     const data = e.data.json();
     console.log('Push Received...', data);

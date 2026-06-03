@@ -22,7 +22,7 @@ let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
 let callDebugEnabled = false;
-let runtimeVersionLabel = 'Version 2026-06-03.6';
+let runtimeVersionLabel = 'Version 2026-06-03.7';
 
 const soundUhOh = document.getElementById('sound-uhoh');
 const soundRing = document.getElementById('sound-ring');
@@ -1709,7 +1709,7 @@ function urlBase64ToUint8Array(base64String) {
 async function registerServiceWorkerAndPush() {
     if ('serviceWorker' in navigator && 'PushManager' in window) {
         try {
-            const register = await navigator.serviceWorker.register('/sw.js');
+            const register = await navigator.serviceWorker.register('/sw.js?v=2');
             
             // Check if already subscribed
             const sub = await register.pushManager.getSubscription();
