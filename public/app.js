@@ -22,7 +22,7 @@ let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
 let callDebugEnabled = false;
-let runtimeVersionLabel = 'Version 2026-06-04.3';
+let runtimeVersionLabel = 'Version 2026-06-04.4';
 let currentChatMessages = [];
 let activeSearchTab = 'text';
 
@@ -1314,7 +1314,8 @@ async function callDebugLog(event, details = {}) {
         'outgoing_ice_ready',
         'ice_candidate_local',
         'ice_candidate_received',
-        'call_diagnostics'
+        'call_diagnostics',
+        'ice_candidate_local_complete'
     ]);
     if (!callDebugEnabled && !alwaysLoggedEvents.has(event)) return;
     console.log('[call-debug]', event, details);
@@ -1708,7 +1709,11 @@ async function flushPendingIceCandidates() {
     while (pendingIceCandidates.length) {
         const candidate = pendingIceCandidates.shift();
         try {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            if (!candidate) {
+                await peerConnection.addIceCandidate(null);
+            } else {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            }
         } catch (e) {
             console.error("Error adding queued ICE candidate", e);
         }
@@ -1736,7 +1741,7 @@ socket.on('call_routed', async (data) => {
 // ICE Candidates
 socket.on('ice_candidate', async (candidate) => {
     remoteIceCandidateCount += 1;
-    await callDebugLog('ice_candidate_received', parseIceCandidateDetails(candidate));
+    await callDebugLog('ice_candidate_received', candidate ? parseIceCandidateDetails(candidate) : { endOfCandidates: true });
     if (!peerConnection) {
         pendingIceCandidates.push(candidate);
         return;
@@ -1748,7 +1753,11 @@ socket.on('ice_candidate', async (candidate) => {
     }
 
     try {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        if (!candidate) {
+            await peerConnection.addIceCandidate(null);
+        } else {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        }
     } catch (e) {
         await callDebugLog('ice_candidate_add_error', { name: e.name, message: e.message });
         console.error("Error adding ICE candidate", e);
@@ -1853,6 +1862,12 @@ function createPeerConnection() {
             });
         } else {
             callDebugLog('ice_candidate_local_complete');
+            const targetId = currentChatPartner ? currentChatPartner.id : incomingCallData?.from;
+            socket.emit('ice_candidate', {
+                to: targetId,
+                toSocketId: activeCallTargetSocketId || incomingCallData?.fromSocketId || null,
+                candidate: null
+            });
         }
     };
 

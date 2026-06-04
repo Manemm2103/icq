@@ -379,7 +379,7 @@ app.delete('/api/call-debug', (req, res) => {
 
 app.get('/api/runtime-config', (req, res) => {
     res.json({
-        version: 'Version 2026-06-04.3',
+        version: 'Version 2026-06-04.4',
         rtcConfig: buildRtcConfig()
     });
 });
@@ -964,10 +964,14 @@ io.on('connection', (socket) => {
         writeCallDebugLog({
             type: 'server',
             event: 'ice_candidate',
-            details: {
+            details: data.candidate ? {
                 to: data.to,
                 targetSocketId,
                 ...parseIceCandidateDetails(data.candidate)
+            } : {
+                to: data.to,
+                targetSocketId,
+                endOfCandidates: true
             }
         });
         if (targetSocketId) {
