@@ -22,7 +22,7 @@ let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
 let callDebugEnabled = false;
-let runtimeVersionLabel = 'Version 2026-06-04.5';
+let runtimeVersionLabel = 'Version 2026-06-04.6';
 let currentChatMessages = [];
 let activeSearchTab = 'text';
 
@@ -1529,6 +1529,19 @@ async function waitForOutgoingIceReadiness(context = 'offer') {
     });
 }
 
+async function getCurrentLocalDescriptionForSignal(context = 'offer') {
+    const localDescription = peerConnection ? peerConnection.localDescription : null;
+    const sdp = localDescription && typeof localDescription.sdp === 'string' ? localDescription.sdp : '';
+    await callDebugLog('local_description_ready', {
+        context,
+        type: localDescription ? localDescription.type : null,
+        hasCandidateLines: sdp.includes('\na=candidate:') || sdp.startsWith('a=candidate:'),
+        hasEndOfCandidates: sdp.includes('a=end-of-candidates'),
+        sdpLength: sdp.length
+    });
+    return localDescription;
+}
+
 // Hook into openChat to show/hide call button
 const originalOpenChat = openChat;
 openChat = async function(user) {
@@ -1589,9 +1602,11 @@ async function startCall(video = true) {
 
         await waitForOutgoingIceReadiness('offer');
 
+        const signalData = await getCurrentLocalDescriptionForSignal('offer');
+
         socket.emit('call_user', {
             userToCall: currentChatPartner.id,
-            signalData: offer,
+            signalData,
             from: currentUser.id,
             video: video
         });
@@ -1676,8 +1691,10 @@ async function acceptCall() {
         
         await waitForOutgoingIceReadiness('answer');
 
+        const signal = await getCurrentLocalDescriptionForSignal('answer');
+
         socket.emit('answer_call', {
-            signal: answer,
+            signal,
             to: incomingCallData.from,
             toSocketId: incomingCallData.fromSocketId || null
         });
