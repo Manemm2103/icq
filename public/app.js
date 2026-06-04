@@ -22,7 +22,7 @@ let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
 let callDebugEnabled = false;
-let runtimeVersionLabel = 'Version 2026-06-04.1';
+let runtimeVersionLabel = 'Version 2026-06-04.2';
 let currentChatMessages = [];
 let activeSearchTab = 'text';
 
@@ -1402,6 +1402,27 @@ let rtcConfig = {
     iceTransportPolicy: 'all'
 };
 
+async function waitForOutgoingIceReadiness(context = 'offer') {
+    if (!peerConnection) return;
+    const needsRelay = rtcConfig.iceTransportPolicy === 'relay';
+    const startedAt = Date.now();
+    const timeoutMs = needsRelay ? 2200 : 900;
+
+    while (Date.now() - startedAt < timeoutMs) {
+        if (peerConnection.iceGatheringState === 'complete') break;
+        if (needsRelay && peerConnection.__hasRelayCandidate) break;
+        await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+
+    await callDebugLog('outgoing_ice_ready', {
+        context,
+        waitedMs: Date.now() - startedAt,
+        iceGatheringState: peerConnection.iceGatheringState,
+        hasRelayCandidate: !!peerConnection.__hasRelayCandidate,
+        iceTransportPolicy: rtcConfig.iceTransportPolicy || 'all'
+    });
+}
+
 // Hook into openChat to show/hide call button
 const originalOpenChat = openChat;
 openChat = async function(user) {
@@ -1457,6 +1478,8 @@ async function startCall(video = true) {
 
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
+
+        await waitForOutgoingIceReadiness('offer');
 
         socket.emit('call_user', {
             userToCall: currentChatPartner.id,
@@ -1541,6 +1564,8 @@ async function acceptCall() {
         const answer = await peerConnection.createAnswer();
         await peerConnection.setLocalDescription(answer);
         
+        await waitForOutgoingIceReadiness('answer');
+
         socket.emit('answer_call', {
             signal: answer,
             to: incomingCallData.from,
@@ -1683,6 +1708,7 @@ function endCall(isRemote = false) {
 function createPeerConnection() {
     pendingIceCandidates = [];
     peerConnection = new RTCPeerConnection(rtcConfig);
+    peerConnection.__hasRelayCandidate = false;
     remoteStream = new MediaStream();
     remoteVideo.srcObject = remoteStream;
     ensureCallVideoPlayback(remoteVideo, false);
@@ -1693,11 +1719,15 @@ function createPeerConnection() {
 
     peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
+            const candidateDetails = parseIceCandidateDetails(event.candidate);
+            if (candidateDetails.type === 'relay') {
+                peerConnection.__hasRelayCandidate = true;
+            }
             const targetId = currentChatPartner ? currentChatPartner.id : incomingCallData?.from;
             callDebugLog('ice_candidate_local', {
                 to: targetId,
                 toSocketId: activeCallTargetSocketId || incomingCallData?.fromSocketId || null,
-                ...parseIceCandidateDetails(event.candidate)
+                ...candidateDetails
             });
             socket.emit('ice_candidate', {
                 to: targetId,
