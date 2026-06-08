@@ -425,6 +425,21 @@ function ensureIntegrationUser(username) {
 
 const iobrokerSenderUser = ensureIntegrationUser(iobrokerSenderUsername);
 
+function authenticateIoBrokerRequest(req, res) {
+    if (!iobrokerApiKey) {
+        res.status(503).json({ success: false, message: 'ioBroker integration is not configured on this server' });
+        return false;
+    }
+
+    const providedApiKey = String(req.headers['x-api-key'] || '').trim();
+    if (!providedApiKey || providedApiKey !== iobrokerApiKey) {
+        res.status(401).json({ success: false, message: 'Invalid API key' });
+        return false;
+    }
+
+    return true;
+}
+
 // Middleware
 app.use(express.json({ limit: '1mb' }));
 app.use('/uploads', express.static(uploadDir));
@@ -469,13 +484,8 @@ app.get('/api/runtime-config', (req, res) => {
 });
 
 app.post('/api/integrations/iobroker/messages', (req, res) => {
-    if (!iobrokerApiKey) {
-        return res.status(503).json({ success: false, message: 'ioBroker integration is not configured on this server' });
-    }
-
-    const providedApiKey = String(req.headers['x-api-key'] || '').trim();
-    if (!providedApiKey || providedApiKey !== iobrokerApiKey) {
-        return res.status(401).json({ success: false, message: 'Invalid API key' });
+    if (!authenticateIoBrokerRequest(req, res)) {
+        return;
     }
 
     const body = req.body || {};
@@ -562,6 +572,89 @@ app.post('/api/integrations/iobroker/messages', (req, res) => {
     } catch (error) {
         console.error('ioBroker integration send failed:', error);
         res.status(500).json({ success: false, message: 'Failed to send DRQ message' });
+    }
+});
+
+app.get('/api/integrations/iobroker/inbox', (req, res) => {
+    if (!authenticateIoBrokerRequest(req, res)) {
+        return;
+    }
+
+    const afterId = Math.max(0, Number.parseInt(String(req.query.afterId || '0'), 10) || 0);
+    const requestedLimit = Number.parseInt(String(req.query.limit || '20'), 10) || 20;
+    const limit = Math.min(Math.max(requestedLimit, 1), 50);
+
+    try {
+        const messages = db.prepare(`
+            SELECT
+                m.id,
+                m.sender_id,
+                m.receiver_id,
+                m.content,
+                m.type,
+                m.severity,
+                m.timestamp,
+                m.delivered_at,
+                m.is_read,
+                u.uin AS sender_uin,
+                u.username AS sender_username
+            FROM messages m
+            LEFT JOIN users u ON u.id = m.sender_id
+            WHERE m.receiver_id = ?
+              AND m.sender_id != ?
+              AND m.id > ?
+            ORDER BY m.id ASC
+            LIMIT ?
+        `).all(iobrokerSenderUser.id, iobrokerSenderUser.id, afterId, limit);
+
+        if (messages.length) {
+            const now = new Date().toISOString();
+            const updateOne = db.prepare(`
+                UPDATE messages
+                SET is_read = 1,
+                    delivered_at = COALESCE(delivered_at, ?)
+                WHERE id = ?
+            `);
+
+            const transaction = db.transaction((rows) => {
+                for (const row of rows) {
+                    updateOne.run(now, row.id);
+                }
+            });
+            transaction(messages);
+
+            messages.forEach((message) => {
+                emitMessageStatus({
+                    ...message,
+                    delivered_at: message.delivered_at || now,
+                    is_read: 1
+                });
+            });
+        }
+
+        res.json({
+            success: true,
+            receiver: {
+                id: iobrokerSenderUser.id,
+                uin: iobrokerSenderUser.uin,
+                username: iobrokerSenderUser.username
+            },
+            messages: messages.map((message) => ({
+                id: Number(message.id),
+                senderId: Number(message.sender_id),
+                senderUsername: message.sender_username || '',
+                senderUin: message.sender_uin != null ? Number(message.sender_uin) : null,
+                content: message.content || '',
+                type: message.type || 'text',
+                severity: message.severity || '',
+                timestamp: message.timestamp || null,
+                deliveredAt: message.delivered_at || null,
+                isRead: 1
+            }))
+        });
+    } catch (error) {
+        console.error('ioBroker integration inbox fetch failed:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch DRQ inbox' });
     }
 });
 
