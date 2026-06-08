@@ -27,6 +27,13 @@ On first start, the app automatically migrates legacy local data from:
 - `TURN_USERNAME`
 - `TURN_CREDENTIAL`
 
+## Optional ioBroker integration variables
+
+- `IOBROKER_API_KEY`
+- `IOBROKER_SENDER_USERNAME` default: `ioBroker`
+
+If `IOBROKER_API_KEY` is set, DRQ enables a protected endpoint for adapter-based message delivery from ioBroker.
+
 If you do not want to use environment variables, you can still provide a local `vapidKeys.json`, but that file should not be committed to a public Git repository.
 
 ## Local Docker run
@@ -58,6 +65,8 @@ TURN_REALM=yourdomain.de
 TURN_EXTERNAL_IP=yourIP
 TURN_USERNAME=your_turn_username
 TURN_CREDENTIAL=your_turn_password
+IOBROKER_API_KEY=your_shared_secret
+IOBROKER_SENDER_USERNAME=ioBroker
 ```
 
 ### Reverse proxy
@@ -91,3 +100,25 @@ If you run a host firewall or upstream NAT, open or forward the same ports there
 - Uploaded files and background assets are persisted in the same volume.
 - The app now loads TURN/STUN runtime configuration from the server environment.
 - The included `coturn` service is meant for direct host port publishing, not normal HTTP reverse proxying.
+
+## ioBroker API
+
+If `IOBROKER_API_KEY` is configured, DRQ accepts status messages on:
+
+- `POST /api/integrations/iobroker/messages`
+
+Headers:
+
+- `x-api-key: <IOBROKER_API_KEY>`
+
+Example payload:
+
+```json
+{
+  "message": "Waschmaschine fertig",
+  "recipients": ["4711", "8159"],
+  "title": "Haus",
+  "severity": "info",
+  "source": "ioBroker"
+}
+```

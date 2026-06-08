@@ -19,6 +19,8 @@ const callDebugLogPath = path.join(dataDir, 'call-debug.log');
 const legacyDbPath = path.join(__dirname, 'chat.db');
 const legacyUploadsDir = path.join(__dirname, 'public/uploads');
 const legacyBackgroundsDir = path.join(__dirname, 'public/backgrounds');
+const iobrokerApiKey = String(process.env.IOBROKER_API_KEY || '').trim();
+const iobrokerSenderUsername = String(process.env.IOBROKER_SENDER_USERNAME || 'ioBroker').trim() || 'ioBroker';
 
 function ensureDir(dirPath) {
     if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
@@ -175,6 +177,55 @@ function emitMessageStatus(message) {
     };
     io.to(`user_${message.sender_id}`).emit('message_status', payload);
     io.to(`user_${message.receiver_id}`).emit('message_status', payload);
+}
+
+function broadcastVisibleUserList() {
+    const publicUsers = db.prepare('SELECT id, uin, username, avatar, status, custom_status FROM users WHERE can_chat = 1').all();
+    io.emit('user_list', publicUsers);
+}
+
+function createStoredMessage({ senderId, receiverId, content, type = 'text', filename = null, replyToId = null, isEncrypted = 0 }) {
+    const deliveredAt = isUserOnline(receiverId) ? new Date().toISOString() : null;
+    const stmt = db.prepare('INSERT INTO messages (sender_id, receiver_id, content, type, filename, reply_to_id, is_encrypted, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+    const info = stmt.run(senderId, receiverId, content, type, filename, replyToId, isEncrypted ? 1 : 0, deliveredAt);
+
+    let replyData = null;
+    if (replyToId) {
+        replyData = db.prepare('SELECT content, type, sender_id, is_encrypted FROM messages WHERE id = ?').get(replyToId);
+    }
+
+    const message = {
+        id: info.lastInsertRowid,
+        sender_id: Number(senderId),
+        receiver_id: Number(receiverId),
+        content,
+        type,
+        filename,
+        delivered_at: deliveredAt,
+        is_read: 0,
+        is_encrypted: isEncrypted ? 1 : 0,
+        reply_to_id: replyToId,
+        reply_content: replyData?.content,
+        reply_type: replyData?.type,
+        reply_is_encrypted: replyData?.is_encrypted,
+        timestamp: new Date().toISOString()
+    };
+
+    io.to(`user_${receiverId}`).emit('receive_message', message);
+    io.to(`user_${senderId}`).emit('receive_message', message);
+    io.to(`user_${receiverId}`).emit('notification', { type: 'message' });
+
+    const sender = db.prepare('SELECT username FROM users WHERE id = ?').get(senderId);
+    const senderName = sender ? sender.username : 'Unbekannt';
+    sendPushToUser(receiverId, {
+        title: `Neue Nachricht von ${senderName}`,
+        body: type === 'text' ? content : 'Neue Mediendatei empfangen',
+        icon: '/drq-logo.svg',
+        tag: `message-${senderId}`,
+        data: { type: 'message', senderId: Number(senderId) }
+    });
+
+    return message;
 }
 
 function normalizeUsernameInput(value) {
@@ -341,6 +392,32 @@ if (!adminUser) {
     }
 }
 
+function ensureIntegrationUser(username) {
+    const existing = db.prepare('SELECT id, uin, username, can_chat FROM users WHERE LOWER(username) = LOWER(?)').get(username);
+    if (existing) {
+        if (existing.can_chat !== 1) {
+            db.prepare('UPDATE users SET can_chat = 1 WHERE id = ?').run(existing.id);
+            console.log(`Updated integration user ${existing.username}: Chat enabled`);
+        }
+        return db.prepare('SELECT id, uin, username, can_chat FROM users WHERE id = ?').get(existing.id);
+    }
+
+    const passwordHash = bcrypt.hashSync(uuidv4(), 10);
+    const uin = generateUIN();
+    const result = db.prepare('INSERT INTO users (uin, username, password, role, can_chat, custom_status) VALUES (?, ?, ?, ?, ?, ?)').run(
+        uin,
+        username,
+        passwordHash,
+        'user',
+        1,
+        'Systemintegration'
+    );
+    console.log(`Created integration user: ${username} (UIN: ${uin})`);
+    return db.prepare('SELECT id, uin, username, can_chat FROM users WHERE id = ?').get(result.lastInsertRowid);
+}
+
+const iobrokerSenderUser = ensureIntegrationUser(iobrokerSenderUsername);
+
 // Middleware
 app.use(express.json({ limit: '1mb' }));
 app.use('/uploads', express.static(uploadDir));
@@ -382,6 +459,101 @@ app.get('/api/runtime-config', (req, res) => {
         version: 'Version 2026-06-04.7',
         rtcConfig: buildRtcConfig()
     });
+});
+
+app.post('/api/integrations/iobroker/messages', (req, res) => {
+    if (!iobrokerApiKey) {
+        return res.status(503).json({ success: false, message: 'ioBroker integration is not configured on this server' });
+    }
+
+    const providedApiKey = String(req.headers['x-api-key'] || '').trim();
+    if (!providedApiKey || providedApiKey !== iobrokerApiKey) {
+        return res.status(401).json({ success: false, message: 'Invalid API key' });
+    }
+
+    const body = req.body || {};
+    const messageText = typeof body.message === 'string' ? body.message.trim() : '';
+    const title = typeof body.title === 'string' ? body.title.trim() : '';
+    const severity = typeof body.severity === 'string' ? body.severity.trim() : 'info';
+    const source = typeof body.source === 'string' ? body.source.trim() : 'ioBroker';
+    const recipients = Array.isArray(body.recipients)
+        ? body.recipients.map(value => String(value).trim()).filter(Boolean)
+        : [];
+
+    if (!messageText) {
+        return res.status(400).json({ success: false, message: 'Missing message' });
+    }
+
+    if (!recipients.length) {
+        return res.status(400).json({ success: false, message: 'Missing recipients' });
+    }
+
+    const recipientUsers = [];
+    const missingRecipients = [];
+    const seenUserIds = new Set();
+
+    for (const recipient of recipients) {
+        const user = /^\d+$/.test(recipient)
+            ? db.prepare('SELECT id, uin, username, can_chat FROM users WHERE uin = ?').get(Number(recipient))
+            : db.prepare('SELECT id, uin, username, can_chat FROM users WHERE LOWER(username) = LOWER(?)').get(recipient);
+
+        if (!user) {
+            missingRecipients.push(recipient);
+            continue;
+        }
+
+        if (!seenUserIds.has(user.id)) {
+            recipientUsers.push(user);
+            seenUserIds.add(user.id);
+        }
+    }
+
+    if (!recipientUsers.length) {
+        return res.status(404).json({ success: false, message: 'No matching DRQ recipients found', missingRecipients });
+    }
+
+    const formattedMessage = [
+        title ? `[${title}]` : '',
+        messageText,
+        source ? `\n\nQuelle: ${source}` : '',
+        severity ? `\nPrioritaet: ${severity}` : ''
+    ].join('').trim();
+
+    try {
+        const sent = recipientUsers.map((user) => {
+            const storedMessage = createStoredMessage({
+                senderId: iobrokerSenderUser.id,
+                receiverId: user.id,
+                content: formattedMessage,
+                type: 'text'
+            });
+            return {
+                userId: user.id,
+                uin: user.uin,
+                username: user.username,
+                messageId: storedMessage.id
+            };
+        });
+
+        if (iobrokerSenderUser.can_chat !== 1) {
+            db.prepare('UPDATE users SET can_chat = 1 WHERE id = ?').run(iobrokerSenderUser.id);
+        }
+        broadcastVisibleUserList();
+
+        res.json({
+            success: true,
+            sender: {
+                id: iobrokerSenderUser.id,
+                uin: iobrokerSenderUser.uin,
+                username: iobrokerSenderUser.username
+            },
+            sent,
+            missingRecipients
+        });
+    } catch (error) {
+        console.error('ioBroker integration send failed:', error);
+        res.status(500).json({ success: false, message: 'Failed to send DRQ message' });
+    }
 });
 
 // Login
@@ -546,8 +718,7 @@ app.put('/api/admin/users/:id/toggle-chat', (req, res) => {
         db.prepare('UPDATE users SET can_chat = ? WHERE id = ?').run(can_chat ? 1 : 0, id);
         
         // Notify all clients to update their user list (only show visible users)
-        const publicUsers = db.prepare('SELECT id, uin, username, avatar, status FROM users WHERE can_chat = 1').all();
-        io.emit('user_list', publicUsers);
+        broadcastVisibleUserList();
         
         res.json({ success: true });
     } catch (e) {
@@ -852,50 +1023,15 @@ io.on('connection', (socket) => {
 
     socket.on('send_message', (data) => {
         const { senderId, receiverId, content, type, filename, replyToId, isEncrypted } = data;
-        const deliveredAt = isUserOnline(receiverId) ? new Date().toISOString() : null;
-        
-        const stmt = db.prepare('INSERT INTO messages (sender_id, receiver_id, content, type, filename, reply_to_id, is_encrypted, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-        const info = stmt.run(senderId, receiverId, content, type || 'text', filename || null, replyToId || null, isEncrypted ? 1 : 0, deliveredAt);
-        
-        // Fetch reply details if needed
-        let replyData = null;
-        if (replyToId) {
-            replyData = db.prepare('SELECT content, type, sender_id, is_encrypted FROM messages WHERE id = ?').get(replyToId);
-        }
-
-        const message = {
-            id: info.lastInsertRowid,
-            sender_id: senderId,
-            receiver_id: receiverId,
+        createStoredMessage({
+            senderId,
+            receiverId,
             content,
             type: type || 'text',
-            filename,
-            delivered_at: deliveredAt,
-            is_read: 0,
-            is_encrypted: isEncrypted ? 1 : 0,
-            reply_to_id: replyToId,
-            reply_content: replyData?.content,
-            reply_type: replyData?.type,
-            reply_is_encrypted: replyData?.is_encrypted,
-            timestamp: new Date().toISOString()
-        };
-
-        io.to(`user_${receiverId}`).emit('receive_message', message);
-        io.to(`user_${senderId}`).emit('receive_message', message);
-        io.to(`user_${receiverId}`).emit('notification', { type: 'message' });
-
-        const sender = db.prepare('SELECT username FROM users WHERE id = ?').get(senderId);
-        const senderName = sender ? sender.username : 'Unbekannt';
-
-        const payload = {
-            title: `Neue Nachricht von ${senderName}`,
-            body: type === 'text' ? content : 'Neue Mediendatei empfangen',
-            icon: '/drq-logo.svg',
-            tag: `message-${senderId}`,
-            data: { type: 'message', senderId }
-        };
-        sendPushToUser(receiverId, payload);
-    
+            filename: filename || null,
+            replyToId: replyToId || null,
+            isEncrypted: isEncrypted ? 1 : 0
+        });
     });
 
     // --- WebRTC Signaling ---
