@@ -31,6 +31,7 @@ let contactStateCache = {
     rejected: []
 };
 let integrationTokensCache = [];
+let currentChatLoadSeq = 0;
 
 const soundUhOh = document.getElementById('sound-uhoh');
 const soundRing = document.getElementById('sound-ring');
@@ -1164,6 +1165,7 @@ function updateMessageStatusUi(message) {
 // --- Chat Logic ---
 
 async function openChat(user) {
+    const chatLoadSeq = ++currentChatLoadSeq;
     currentChatPartner = user;
     chatTitle.textContent = `${user.displayName || user.username} (${user.uin})`;
     document.getElementById('chat-subtitle').textContent = getChatSubtitle(user);
@@ -1201,19 +1203,43 @@ async function openChat(user) {
     document.getElementById('chat-area').style.transform = "translateX(0)";
 
     messagesDiv.innerHTML = '';
+    currentChatMessages = [];
     if (user.kind && user.kind !== 'user') {
         renderContactRequestChat(user);
         return;
     }
 
-    const res = await axios.get(`/api/history/${currentUser.id}/${user.id}`);
-    currentChatMessages = res.data;
-    renderCurrentChatMessages();
     setChatComposerDisabled(false);
-    scrollToBottom();
+    messagesDiv.innerHTML = '<div class="empty-state"><p>Chat wird geladen...</p></div>';
+
+    try {
+        const res = await axios.get(`/api/history/${currentUser.id}/${user.id}`);
+        if (chatLoadSeq !== currentChatLoadSeq || !currentChatPartner || Number(currentChatPartner.id) !== Number(user.id)) {
+            return;
+        }
+
+        const liveMessages = [...currentChatMessages];
+        currentChatMessages = Array.isArray(res.data) ? res.data : [];
+        liveMessages.forEach(upsertCurrentChatMessage);
+        renderCurrentChatMessages();
+        scrollToBottom();
+    } catch (err) {
+        if (chatLoadSeq !== currentChatLoadSeq || !currentChatPartner || Number(currentChatPartner.id) !== Number(user.id)) {
+            return;
+        }
+
+        if (currentChatMessages.length) {
+            renderCurrentChatMessages();
+            scrollToBottom();
+        } else {
+            messagesDiv.innerHTML = '<div class="empty-state"><p>Verlauf konnte gerade nicht geladen werden.</p></div>';
+        }
+        console.error('Failed to load chat history', err);
+    }
 }
 
 function showContactList() {
+    currentChatLoadSeq += 1;
     currentChatPartner = null;
     currentChatMessages = [];
     renderUserList();
@@ -1457,6 +1483,7 @@ function setChatComposerDisabled(disabled, placeholderText = 'Nachricht eingeben
 }
 
 function closeChat() {
+    currentChatLoadSeq += 1;
     currentChatPartner = null;
     currentChatMessages = [];
     chatTitle.textContent = 'Wähle einen Kontakt';
