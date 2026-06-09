@@ -216,6 +216,17 @@ function emitMessageStatus(message) {
     io.to(`user_${message.receiver_id}`).emit('message_status', payload);
 }
 
+function hasPersonalIntegrationLink(userId, integrationUserId) {
+    return !!db.prepare(`
+        SELECT 1
+        FROM integration_tokens
+        WHERE active = 1
+          AND user_id = ?
+          AND integration_user_id = ?
+        LIMIT 1
+    `).get(Number(userId), Number(integrationUserId));
+}
+
 function getVisibleUsersForUser(userId) {
     const requester = db.prepare('SELECT id, role FROM users WHERE id = ?').get(Number(userId));
     if (!requester) return [];
@@ -238,6 +249,13 @@ function getVisibleUsersForUser(userId) {
                 (u.is_integration = 1 AND u.owner_user_id = ?)
                 OR EXISTS (
                     SELECT 1
+                    FROM integration_tokens t
+                    WHERE t.active = 1
+                      AND t.user_id = ?
+                      AND t.integration_user_id = u.id
+                )
+                OR EXISTS (
+                    SELECT 1
                     FROM contacts c
                     WHERE c.status = 'accepted'
                       AND (
@@ -247,7 +265,7 @@ function getVisibleUsersForUser(userId) {
                 )
               )
         ORDER BY u.is_integration DESC, u.username COLLATE NOCASE ASC
-    `).all(Number(userId), Number(userId), Number(userId), Number(userId));
+    `).all(Number(userId), Number(userId), Number(userId), Number(userId), Number(userId));
 }
 
 function broadcastVisibleUserList(userId = null) {
@@ -305,6 +323,8 @@ function canUsersChat(userId, otherUserId) {
     if (pair.user_role === 'admin') return true;
     if (pair.other_is_integration === 1 && Number(pair.other_owner_user_id) === Number(userId)) return true;
     if (pair.user_is_integration === 1 && Number(pair.user_owner_user_id) === Number(otherUserId)) return true;
+    if (hasPersonalIntegrationLink(userId, otherUserId)) return true;
+    if (hasPersonalIntegrationLink(otherUserId, userId)) return true;
 
     const accepted = db.prepare(`
         SELECT 1
