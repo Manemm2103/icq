@@ -276,6 +276,36 @@
                 <input type="file" id="edit-bg-upload" accept="image/*" title="Eigenes Bild">
             </div>
 
+            <div class="profile-section">
+                <label>Kontakte</label>
+                <div class="profile-inline-row">
+                    <input type="text" id="contact-search-input" placeholder="DRQ Nummer oder Benutzername">
+                    <button type="button" onclick="sendContactRequest()">Hinzufügen</button>
+                </div>
+                <div class="profile-list-block">
+                    <p class="profile-subhead">Anfragen an mich</p>
+                    <div id="pending-contacts-list" class="profile-mini-list"></div>
+                </div>
+                <div class="profile-list-block">
+                    <p class="profile-subhead">Gesendete Anfragen</p>
+                    <div id="outgoing-contacts-list" class="profile-mini-list"></div>
+                </div>
+                <div class="profile-list-block">
+                    <p class="profile-subhead">Freunde</p>
+                    <div id="accepted-contacts-list" class="profile-mini-list"></div>
+                </div>
+            </div>
+
+            <div class="profile-section">
+                <label>ioBroker API Keys</label>
+                <div class="profile-inline-row">
+                    <input type="text" id="integration-name-input" placeholder="Name optional, z. B. Zuhause">
+                    <button type="button" onclick="createIntegrationToken()">Neuer Key</button>
+                </div>
+                <div id="integration-token-output" class="integration-token-output" style="display:none;"></div>
+                <div id="integration-token-list" class="profile-mini-list"></div>
+            </div>
+
             <button onclick="saveProfile()" style="width:100%;">Speichern</button>
         </div>
     </div>

@@ -6,6 +6,7 @@ const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const ogs = require('open-graph-scraper');
 
@@ -141,6 +142,18 @@ function buildStoredFilename(targetDir, originalName) {
     return candidate;
 }
 
+function hashIntegrationToken(token) {
+    return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
+function generateIntegrationSuffix() {
+    return crypto.randomBytes(3).toString('hex').slice(0, 5);
+}
+
+function generateIntegrationTokenValue() {
+    return crypto.randomBytes(24).toString('hex');
+}
+
 function sendPushToUser(userId, payload) {
     const subs = db.prepare('SELECT subscription FROM push_subscriptions WHERE user_id = ?').all(userId);
     for (const subRow of subs) {
@@ -179,9 +192,85 @@ function emitMessageStatus(message) {
     io.to(`user_${message.receiver_id}`).emit('message_status', payload);
 }
 
-function broadcastVisibleUserList() {
-    const publicUsers = db.prepare('SELECT id, uin, username, avatar, status, custom_status FROM users WHERE can_chat = 1').all();
-    io.emit('user_list', publicUsers);
+function getVisibleUsersForUser(userId) {
+    const requester = db.prepare('SELECT id, role FROM users WHERE id = ?').get(Number(userId));
+    if (!requester) return [];
+
+    if (requester.role === 'admin') {
+        return db.prepare(`
+            SELECT id, uin, username, avatar, status, custom_status, can_chat, is_integration, owner_user_id
+            FROM users
+            WHERE can_chat = 1
+            ORDER BY username COLLATE NOCASE ASC
+        `).all();
+    }
+
+    return db.prepare(`
+        SELECT DISTINCT u.id, u.uin, u.username, u.avatar, u.status, u.custom_status, u.can_chat, u.is_integration, u.owner_user_id
+        FROM users u
+        WHERE u.can_chat = 1
+          AND u.id != ?
+          AND (
+                (u.is_integration = 1 AND u.owner_user_id = ?)
+                OR EXISTS (
+                    SELECT 1
+                    FROM contacts c
+                    WHERE c.status = 'accepted'
+                      AND (
+                            (c.requester_id = ? AND c.addressee_id = u.id)
+                            OR (c.addressee_id = ? AND c.requester_id = u.id)
+                          )
+                )
+              )
+        ORDER BY u.is_integration DESC, u.username COLLATE NOCASE ASC
+    `).all(Number(userId), Number(userId), Number(userId), Number(userId));
+}
+
+function broadcastVisibleUserList(userId = null) {
+    if (userId != null) {
+        io.to(`user_${Number(userId)}`).emit('user_list', getVisibleUsersForUser(Number(userId)));
+        return;
+    }
+
+    const onlineUserIds = [...new Set([...onlineUsers.values()].map(Number).filter(Boolean))];
+    onlineUserIds.forEach((onlineUserId) => {
+        io.to(`user_${onlineUserId}`).emit('user_list', getVisibleUsersForUser(onlineUserId));
+    });
+}
+
+function canUsersChat(userId, otherUserId) {
+    if (Number(userId) === Number(otherUserId)) return true;
+
+    const pair = db.prepare(`
+        SELECT
+            a.id AS user_id,
+            a.role AS user_role,
+            b.id AS other_id,
+            b.is_integration AS other_is_integration,
+            b.owner_user_id AS other_owner_user_id,
+            a.is_integration AS user_is_integration,
+            a.owner_user_id AS user_owner_user_id
+        FROM users a
+        JOIN users b ON b.id = ?
+        WHERE a.id = ?
+    `).get(Number(userId), Number(otherUserId));
+
+    if (!pair) return false;
+    if (pair.user_role === 'admin') return true;
+    if (pair.other_is_integration === 1 && Number(pair.other_owner_user_id) === Number(userId)) return true;
+    if (pair.user_is_integration === 1 && Number(pair.user_owner_user_id) === Number(otherUserId)) return true;
+
+    const accepted = db.prepare(`
+        SELECT 1
+        FROM contacts
+        WHERE status = 'accepted'
+          AND (
+                (requester_id = ? AND addressee_id = ?)
+                OR (requester_id = ? AND addressee_id = ?)
+              )
+    `).get(Number(userId), Number(otherUserId), Number(otherUserId), Number(userId));
+
+    return !!accepted;
 }
 
 function createStoredMessage({ senderId, receiverId, content, type = 'text', filename = null, replyToId = null, isEncrypted = 0, severity = '' }) {
@@ -318,7 +407,28 @@ db.exec(`
         status TEXT DEFAULT 'offline',
         custom_status TEXT DEFAULT '', -- New: User defined status message
         public_key TEXT DEFAULT '', -- E2EE: Public Key (Base64)
-        can_chat INTEGER DEFAULT 1 -- 1 = yes, 0 = no
+        can_chat INTEGER DEFAULT 1, -- 1 = yes, 0 = no
+        is_integration INTEGER DEFAULT 0,
+        owner_user_id INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS contacts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        requester_id INTEGER NOT NULL,
+        addressee_id INTEGER NOT NULL,
+        status TEXT DEFAULT 'pending',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(requester_id, addressee_id)
+    );
+    CREATE TABLE IF NOT EXISTS integration_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT DEFAULT '',
+        token_hash TEXT UNIQUE NOT NULL,
+        integration_user_id INTEGER,
+        last_used_at DATETIME,
+        active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -349,6 +459,14 @@ try {
         db.prepare("ALTER TABLE users ADD COLUMN public_key TEXT DEFAULT ''").run();
         console.log("Migration: Added public_key to users");
     }
+    if (!userCols.some(c => c.name === 'is_integration')) {
+        db.prepare("ALTER TABLE users ADD COLUMN is_integration INTEGER DEFAULT 0").run();
+        console.log("Migration: Added is_integration to users");
+    }
+    if (!userCols.some(c => c.name === 'owner_user_id')) {
+        db.prepare("ALTER TABLE users ADD COLUMN owner_user_id INTEGER").run();
+        console.log("Migration: Added owner_user_id to users");
+    }
     
     const msgCols = db.prepare("PRAGMA table_info(messages)").all();
     if (!msgCols.some(c => c.name === 'delivered_at')) {
@@ -371,6 +489,28 @@ try {
         db.prepare("ALTER TABLE messages ADD COLUMN severity TEXT DEFAULT ''").run();
         console.log("Migration: Added severity to messages");
     }
+
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            requester_id INTEGER NOT NULL,
+            addressee_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(requester_id, addressee_id)
+        );
+        CREATE TABLE IF NOT EXISTS integration_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT DEFAULT '',
+            token_hash TEXT UNIQUE NOT NULL,
+            integration_user_id INTEGER,
+            last_used_at DATETIME,
+            active INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    `);
 } catch (e) { console.error("Migration error:", e); }
 
 // Generate Random UIN (6-9 digits)
@@ -425,19 +565,203 @@ function ensureIntegrationUser(username) {
 
 const iobrokerSenderUser = ensureIntegrationUser(iobrokerSenderUsername);
 
-function authenticateIoBrokerRequest(req, res) {
-    if (!iobrokerApiKey) {
-        res.status(503).json({ success: false, message: 'ioBroker integration is not configured on this server' });
-        return false;
+function ensurePersonalIntegrationUser(ownerUserId, preferredName = '') {
+    const owner = db.prepare('SELECT id, username FROM users WHERE id = ?').get(Number(ownerUserId));
+    if (!owner) {
+        throw new Error('Owner user not found');
     }
 
+    let username = '';
+    let attempts = 0;
+    while (!username && attempts < 20) {
+        const candidate = preferredName || `iobroker_${generateIntegrationSuffix()}`;
+        const exists = db.prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?)').get(candidate);
+        if (!exists) {
+            username = candidate;
+        }
+        attempts += 1;
+    }
+
+    if (!username) {
+        throw new Error('Could not allocate integration username');
+    }
+
+    const passwordHash = bcrypt.hashSync(uuidv4(), 10);
+    const uin = generateUIN();
+    const result = db.prepare(`
+        INSERT INTO users (uin, username, password, role, can_chat, custom_status, is_integration, owner_user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        uin,
+        username,
+        passwordHash,
+        'user',
+        1,
+        'Persoenliche ioBroker-Integration',
+        1,
+        Number(ownerUserId)
+    );
+
+    return db.prepare(`
+        SELECT id, uin, username, can_chat, is_integration, owner_user_id
+        FROM users
+        WHERE id = ?
+    `).get(result.lastInsertRowid);
+}
+
+function createIntegrationTokenRecord(ownerUserId, name = '') {
+    const plainToken = generateIntegrationTokenValue();
+    const tokenHash = hashIntegrationToken(plainToken);
+    const info = db.prepare(`
+        INSERT INTO integration_tokens (user_id, name, token_hash, active)
+        VALUES (?, ?, ?, 1)
+    `).run(Number(ownerUserId), String(name || '').trim(), tokenHash);
+
+    return {
+        id: Number(info.lastInsertRowid),
+        token: plainToken
+    };
+}
+
+function getContactStateForUser(userId) {
+    const accepted = db.prepare(`
+        SELECT
+            c.id,
+            c.status,
+            c.requester_id,
+            c.addressee_id,
+            u.id AS user_id,
+            u.uin,
+            u.username,
+            u.avatar,
+            u.status AS online_status,
+            u.custom_status
+        FROM contacts c
+        JOIN users u ON u.id = CASE
+            WHEN c.requester_id = ? THEN c.addressee_id
+            ELSE c.requester_id
+        END
+        WHERE c.status = 'accepted'
+          AND (c.requester_id = ? OR c.addressee_id = ?)
+        ORDER BY u.username COLLATE NOCASE ASC
+    `).all(Number(userId), Number(userId), Number(userId));
+
+    const pendingIncoming = db.prepare(`
+        SELECT
+            c.id,
+            c.status,
+            c.requester_id,
+            c.addressee_id,
+            u.id AS user_id,
+            u.uin,
+            u.username,
+            u.avatar,
+            u.status AS online_status,
+            u.custom_status
+        FROM contacts c
+        JOIN users u ON u.id = c.requester_id
+        WHERE c.status = 'pending'
+          AND c.addressee_id = ?
+        ORDER BY c.created_at DESC
+    `).all(Number(userId));
+
+    const pendingOutgoing = db.prepare(`
+        SELECT
+            c.id,
+            c.status,
+            c.requester_id,
+            c.addressee_id,
+            u.id AS user_id,
+            u.uin,
+            u.username,
+            u.avatar,
+            u.status AS online_status,
+            u.custom_status
+        FROM contacts c
+        JOIN users u ON u.id = c.addressee_id
+        WHERE c.status = 'pending'
+          AND c.requester_id = ?
+        ORDER BY c.created_at DESC
+    `).all(Number(userId));
+
+    return { accepted, pendingIncoming, pendingOutgoing };
+}
+
+function getIntegrationTokensForUser(userId) {
+    return db.prepare(`
+        SELECT
+            t.id,
+            t.name,
+            t.integration_user_id,
+            t.last_used_at,
+            t.active,
+            t.created_at,
+            u.username AS integration_username,
+            u.uin AS integration_uin
+        FROM integration_tokens t
+        LEFT JOIN users u ON u.id = t.integration_user_id
+        WHERE t.user_id = ?
+        ORDER BY t.created_at DESC
+    `).all(Number(userId));
+}
+
+function authenticateIoBrokerRequest(req, res) {
     const providedApiKey = String(req.headers['x-api-key'] || '').trim();
-    if (!providedApiKey || providedApiKey !== iobrokerApiKey) {
+    if (!providedApiKey) {
         res.status(401).json({ success: false, message: 'Invalid API key' });
         return false;
     }
 
-    return true;
+    if (iobrokerApiKey && providedApiKey === iobrokerApiKey) {
+        return {
+            mode: 'legacy',
+            ownerUser: null,
+            integrationUser: iobrokerSenderUser,
+            tokenRecord: null
+        };
+    }
+
+    const tokenHash = hashIntegrationToken(providedApiKey);
+    const tokenRecord = db.prepare(`
+        SELECT id, user_id, name, integration_user_id, active
+        FROM integration_tokens
+        WHERE token_hash = ?
+          AND active = 1
+    `).get(tokenHash);
+
+    if (!tokenRecord) {
+        res.status(401).json({ success: false, message: 'Invalid API key' });
+        return false;
+    }
+
+    const ownerUser = db.prepare('SELECT id, uin, username, role FROM users WHERE id = ?').get(tokenRecord.user_id);
+    if (!ownerUser) {
+        res.status(401).json({ success: false, message: 'Invalid token owner' });
+        return false;
+    }
+
+    let integrationUser = null;
+    if (tokenRecord.integration_user_id) {
+        integrationUser = db.prepare(`
+            SELECT id, uin, username, can_chat, is_integration, owner_user_id
+            FROM users
+            WHERE id = ?
+        `).get(tokenRecord.integration_user_id);
+    }
+
+    if (!integrationUser) {
+        integrationUser = ensurePersonalIntegrationUser(ownerUser.id);
+        db.prepare('UPDATE integration_tokens SET integration_user_id = ? WHERE id = ?').run(integrationUser.id, tokenRecord.id);
+    }
+
+    db.prepare('UPDATE integration_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?').run(tokenRecord.id);
+
+    return {
+        mode: 'personal',
+        ownerUser,
+        integrationUser,
+        tokenRecord
+    };
 }
 
 // Middleware
@@ -484,7 +808,8 @@ app.get('/api/runtime-config', (req, res) => {
 });
 
 app.post('/api/integrations/iobroker/messages', (req, res) => {
-    if (!authenticateIoBrokerRequest(req, res)) {
+    const authContext = authenticateIoBrokerRequest(req, res);
+    if (!authContext) {
         return;
     }
 
@@ -520,6 +845,10 @@ app.post('/api/integrations/iobroker/messages', (req, res) => {
         }
 
         if (!seenUserIds.has(user.id)) {
+            if (authContext.ownerUser && !canUsersChat(authContext.ownerUser.id, user.id)) {
+                missingRecipients.push(recipient);
+                continue;
+            }
             recipientUsers.push(user);
             seenUserIds.add(user.id);
         }
@@ -540,7 +869,7 @@ app.post('/api/integrations/iobroker/messages', (req, res) => {
     try {
         const sent = recipientUsers.map((user) => {
             const storedMessage = createStoredMessage({
-                senderId: iobrokerSenderUser.id,
+                senderId: authContext.integrationUser.id,
                 receiverId: user.id,
                 content: formattedMessage,
                 type: 'text',
@@ -554,17 +883,21 @@ app.post('/api/integrations/iobroker/messages', (req, res) => {
             };
         });
 
-        if (iobrokerSenderUser.can_chat !== 1) {
-            db.prepare('UPDATE users SET can_chat = 1 WHERE id = ?').run(iobrokerSenderUser.id);
+        if (authContext.integrationUser.can_chat !== 1) {
+            db.prepare('UPDATE users SET can_chat = 1 WHERE id = ?').run(authContext.integrationUser.id);
         }
-        broadcastVisibleUserList();
+        if (authContext.ownerUser) {
+            broadcastVisibleUserList(authContext.ownerUser.id);
+        } else {
+            broadcastVisibleUserList();
+        }
 
         res.json({
             success: true,
             sender: {
-                id: iobrokerSenderUser.id,
-                uin: iobrokerSenderUser.uin,
-                username: iobrokerSenderUser.username
+                id: authContext.integrationUser.id,
+                uin: authContext.integrationUser.uin,
+                username: authContext.integrationUser.username
             },
             sent,
             missingRecipients
@@ -576,7 +909,8 @@ app.post('/api/integrations/iobroker/messages', (req, res) => {
 });
 
 app.get('/api/integrations/iobroker/inbox', (req, res) => {
-    if (!authenticateIoBrokerRequest(req, res)) {
+    const authContext = authenticateIoBrokerRequest(req, res);
+    if (!authContext) {
         return;
     }
 
@@ -605,7 +939,7 @@ app.get('/api/integrations/iobroker/inbox', (req, res) => {
               AND m.id > ?
             ORDER BY m.id ASC
             LIMIT ?
-        `).all(iobrokerSenderUser.id, iobrokerSenderUser.id, afterId, limit);
+        `).all(authContext.integrationUser.id, authContext.integrationUser.id, afterId, limit);
 
         if (messages.length) {
             const now = new Date().toISOString();
@@ -635,9 +969,9 @@ app.get('/api/integrations/iobroker/inbox', (req, res) => {
         res.json({
             success: true,
             receiver: {
-                id: iobrokerSenderUser.id,
-                uin: iobrokerSenderUser.uin,
-                username: iobrokerSenderUser.username
+                id: authContext.integrationUser.id,
+                uin: authContext.integrationUser.uin,
+                username: authContext.integrationUser.username
             },
             messages: messages.map((message) => ({
                 id: Number(message.id),
@@ -726,13 +1060,7 @@ app.put('/api/profile/:id', (req, res) => {
         
         const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
         
-        // Broadcast new status text to everyone
-        io.emit('status_update', { 
-            userId: updated.id, 
-            status: updated.status, 
-            custom_status: updated.custom_status,
-            public_key: updated.public_key // Broadcast key too so clients can cache it
-        });
+        broadcastVisibleUserList();
 
         res.json({ success: true, user: { 
             id: updated.id, uin: updated.uin, username: updated.username, 
@@ -744,6 +1072,215 @@ app.put('/api/profile/:id', (req, res) => {
         console.error(e);
         res.status(500).json({ success: false, message: 'Update failed' });
     }
+});
+
+app.get('/api/profile/:id/contacts', (req, res) => {
+    const userId = Number(req.params.id);
+    const requesterId = Number(req.query.requesterId || userId);
+
+    if (userId !== requesterId) {
+        return res.status(403).json({ success: false, message: 'Nicht erlaubt' });
+    }
+
+    res.json({ success: true, ...getContactStateForUser(userId) });
+});
+
+app.get('/api/profile/:id/user-search', (req, res) => {
+    const userId = Number(req.params.id);
+    const requesterId = Number(req.query.requesterId || userId);
+    const q = String(req.query.q || '').trim();
+
+    if (userId !== requesterId) {
+        return res.status(403).json({ success: false, message: 'Nicht erlaubt' });
+    }
+    if (!q || q.length < 2) {
+        return res.json({ success: true, results: [] });
+    }
+
+    const results = db.prepare(`
+        SELECT id, uin, username, avatar, status, custom_status
+        FROM users
+        WHERE can_chat = 1
+          AND is_integration = 0
+          AND id != ?
+          AND (
+                LOWER(username) LIKE LOWER(?)
+                OR CAST(uin AS TEXT) LIKE ?
+              )
+        ORDER BY username COLLATE NOCASE ASC
+        LIMIT 20
+    `).all(userId, `%${q}%`, `%${q}%`);
+
+    res.json({ success: true, results });
+});
+
+app.post('/api/profile/:id/contacts/request', (req, res) => {
+    const userId = Number(req.params.id);
+    const requesterId = Number(req.body?.requesterId || userId);
+    const targetInput = String(req.body?.target || '').trim();
+
+    if (userId !== requesterId) {
+        return res.status(403).json({ success: false, message: 'Nicht erlaubt' });
+    }
+    if (!targetInput) {
+        return res.status(400).json({ success: false, message: 'Kontakt fehlt' });
+    }
+
+    const targetUser = /^\d+$/.test(targetInput)
+        ? db.prepare('SELECT id, uin, username, is_integration FROM users WHERE uin = ?').get(Number(targetInput))
+        : db.prepare('SELECT id, uin, username, is_integration FROM users WHERE LOWER(username) = LOWER(?)').get(targetInput);
+
+    if (!targetUser || targetUser.is_integration === 1 || Number(targetUser.id) === userId) {
+        return res.status(404).json({ success: false, message: 'Kontakt nicht gefunden' });
+    }
+
+    const existingAccepted = canUsersChat(userId, targetUser.id);
+    if (existingAccepted) {
+        return res.status(400).json({ success: false, message: 'Kontakt bereits vorhanden' });
+    }
+
+    const reversePending = db.prepare(`
+        SELECT id FROM contacts
+        WHERE requester_id = ? AND addressee_id = ? AND status = 'pending'
+    `).get(targetUser.id, userId);
+
+    if (reversePending) {
+        db.prepare(`
+            UPDATE contacts
+            SET status = 'accepted', updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        `).run(reversePending.id);
+    } else {
+        db.prepare(`
+            INSERT INTO contacts (requester_id, addressee_id, status)
+            VALUES (?, ?, 'pending')
+            ON CONFLICT(requester_id, addressee_id) DO UPDATE SET
+                status = 'pending',
+                updated_at = CURRENT_TIMESTAMP
+        `).run(userId, targetUser.id);
+    }
+
+    broadcastVisibleUserList(userId);
+    broadcastVisibleUserList(targetUser.id);
+    io.to(`user_${targetUser.id}`).emit('contacts_updated');
+    io.to(`user_${userId}`).emit('contacts_updated');
+
+    res.json({ success: true, target: targetUser });
+});
+
+app.post('/api/profile/:id/contacts/:contactId/accept', (req, res) => {
+    const userId = Number(req.params.id);
+    const requesterId = Number(req.body?.requesterId || userId);
+    const contactId = Number(req.params.contactId);
+
+    if (userId !== requesterId) {
+        return res.status(403).json({ success: false, message: 'Nicht erlaubt' });
+    }
+
+    const contact = db.prepare(`
+        SELECT * FROM contacts
+        WHERE id = ? AND addressee_id = ? AND status = 'pending'
+    `).get(contactId, userId);
+
+    if (!contact) {
+        return res.status(404).json({ success: false, message: 'Anfrage nicht gefunden' });
+    }
+
+    db.prepare(`
+        UPDATE contacts
+        SET status = 'accepted', updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    `).run(contactId);
+
+    broadcastVisibleUserList(userId);
+    broadcastVisibleUserList(contact.requester_id);
+    io.to(`user_${contact.requester_id}`).emit('contacts_updated');
+    io.to(`user_${userId}`).emit('contacts_updated');
+
+    res.json({ success: true });
+});
+
+app.post('/api/profile/:id/contacts/:contactId/reject', (req, res) => {
+    const userId = Number(req.params.id);
+    const requesterId = Number(req.body?.requesterId || userId);
+    const contactId = Number(req.params.contactId);
+
+    if (userId !== requesterId) {
+        return res.status(403).json({ success: false, message: 'Nicht erlaubt' });
+    }
+
+    db.prepare(`
+        DELETE FROM contacts
+        WHERE id = ?
+          AND (
+                requester_id = ?
+                OR addressee_id = ?
+              )
+    `).run(contactId, userId, userId);
+
+    io.to(`user_${userId}`).emit('contacts_updated');
+    res.json({ success: true });
+});
+
+app.get('/api/profile/:id/integrations', (req, res) => {
+    const userId = Number(req.params.id);
+    const requesterId = Number(req.query.requesterId || userId);
+    if (userId !== requesterId) {
+        return res.status(403).json({ success: false, message: 'Nicht erlaubt' });
+    }
+
+    res.json({ success: true, tokens: getIntegrationTokensForUser(userId) });
+});
+
+app.post('/api/profile/:id/integrations/tokens', (req, res) => {
+    const userId = Number(req.params.id);
+    const requesterId = Number(req.body?.requesterId || userId);
+    const name = String(req.body?.name || '').trim();
+
+    if (userId !== requesterId) {
+        return res.status(403).json({ success: false, message: 'Nicht erlaubt' });
+    }
+
+    const tokenRecord = createIntegrationTokenRecord(userId, name);
+    res.json({ success: true, token: tokenRecord.token, tokenId: tokenRecord.id });
+});
+
+app.post('/api/profile/:id/integrations/tokens/:tokenId/rotate', (req, res) => {
+    const userId = Number(req.params.id);
+    const requesterId = Number(req.body?.requesterId || userId);
+    const tokenId = Number(req.params.tokenId);
+
+    if (userId !== requesterId) {
+        return res.status(403).json({ success: false, message: 'Nicht erlaubt' });
+    }
+
+    const token = generateIntegrationTokenValue();
+    db.prepare(`
+        UPDATE integration_tokens
+        SET token_hash = ?, last_used_at = NULL, active = 1
+        WHERE id = ? AND user_id = ?
+    `).run(hashIntegrationToken(token), tokenId, userId);
+
+    res.json({ success: true, token });
+});
+
+app.post('/api/profile/:id/integrations/tokens/:tokenId/toggle', (req, res) => {
+    const userId = Number(req.params.id);
+    const requesterId = Number(req.body?.requesterId || userId);
+    const tokenId = Number(req.params.tokenId);
+    const active = req.body?.active ? 1 : 0;
+
+    if (userId !== requesterId) {
+        return res.status(403).json({ success: false, message: 'Nicht erlaubt' });
+    }
+
+    db.prepare(`
+        UPDATE integration_tokens
+        SET active = ?
+        WHERE id = ? AND user_id = ?
+    `).run(active, tokenId, userId);
+
+    res.json({ success: true });
 });
 
 // Get Public Key for a User
@@ -947,6 +1484,10 @@ app.get('/api/history/:userId/:contactId', (req, res) => {
     const contactId = Number(req.params.contactId);
     const now = new Date().toISOString();
 
+    if (!canUsersChat(userId, contactId)) {
+        return res.status(403).json({ success: false, message: 'Chat nicht erlaubt' });
+    }
+
     try {
         const pendingStatuses = db.prepare(`
             SELECT id, sender_id, receiver_id, delivered_at, is_read
@@ -1069,15 +1610,14 @@ io.on('connection', (socket) => {
         socket.data.joinedAt = new Date().toISOString();
         socket.join(`user_${userId}`);
 
-        const user = db.prepare('SELECT status, custom_status FROM users WHERE id = ?').get(userId);
+        const user = db.prepare('SELECT status, custom_status, role FROM users WHERE id = ?').get(userId);
         if (user && user.status !== 'online') {
             db.prepare('UPDATE users SET status = ? WHERE id = ?').run('online', userId);
-            io.emit('status_update', { userId, status: 'online', custom_status: user.custom_status || '' });
+            broadcastVisibleUserList();
         }
         
         // Send user list to connected client (only visible users)
-        const users = db.prepare('SELECT id, uin, username, avatar, status, custom_status FROM users WHERE can_chat = 1').all();
-        socket.emit('user_list', users);
+        socket.emit('user_list', getVisibleUsersForUser(Number(userId)));
 
         // Send unread counts
         const unreads = db.prepare('SELECT sender_id, count(*) as count FROM messages WHERE receiver_id = ? AND is_read = 0 GROUP BY sender_id').all(userId);
@@ -1107,10 +1647,12 @@ io.on('connection', (socket) => {
 
     
     socket.on('typing', (data) => {
+        if (!canUsersChat(data.from, data.to)) return;
         io.to(`user_${data.to}`).emit('typing', { from: data.from });
     });
     
     socket.on('stop_typing', (data) => {
+        if (!canUsersChat(data.from, data.to)) return;
         io.to(`user_${data.to}`).emit('stop_typing', { from: data.from });
     });
     
@@ -1120,11 +1662,14 @@ io.on('connection', (socket) => {
         if (!user || user.status === 'online') return;
 
         db.prepare('UPDATE users SET status = ? WHERE id = ?').run('online', userId);
-        io.emit('status_update', { userId, status: 'online', custom_status: user.custom_status || '' });
+        broadcastVisibleUserList();
     });
 
     socket.on('send_message', (data) => {
         const { senderId, receiverId, content, type, filename, replyToId, isEncrypted, severity } = data;
+        if (!canUsersChat(senderId, receiverId)) {
+            return;
+        }
         createStoredMessage({
             senderId,
             receiverId,
@@ -1139,6 +1684,7 @@ io.on('connection', (socket) => {
 
     // --- WebRTC Signaling ---
     socket.on('call_user', (data) => {
+        if (!canUsersChat(data.from, data.userToCall)) return;
         const targetSocketId = getPreferredSocketId(data.userToCall, socket.id);
         writeCallDebugLog({
             type: 'server',
@@ -1183,6 +1729,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('answer_call', (data) => {
+        if (!canUsersChat(data.to, onlineUsers.get(socket.id))) return;
         const targetSocketId = data.toSocketId || getPreferredSocketId(data.to, socket.id);
         writeCallDebugLog({ type: 'server', event: 'answer_call', details: { to: data.to, targetSocketId } });
         if (targetSocketId) {
@@ -1199,6 +1746,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('ice_candidate', (data) => {
+        if (!canUsersChat(data.to, onlineUsers.get(socket.id))) return;
         const targetSocketId = data.toSocketId || getPreferredSocketId(data.to, socket.id);
         writeCallDebugLog({
             type: 'server',
@@ -1221,6 +1769,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('end_call', (data) => {
+        if (!canUsersChat(data.to, onlineUsers.get(socket.id))) return;
         const targetSocketId = data.toSocketId || getPreferredSocketId(data.to, socket.id);
         writeCallDebugLog({ type: 'server', event: 'end_call', details: { to: data.to, targetSocketId } });
         if (targetSocketId) {
@@ -1239,7 +1788,7 @@ io.on('connection', (socket) => {
             const isStillOnline = [...onlineUsers.values()].includes(userId);
             if (!isStillOnline) {
                 db.prepare('UPDATE users SET status = ? WHERE id = ?').run('offline', userId);
-                io.emit('status_update', { userId, status: 'offline' });
+                broadcastVisibleUserList();
             }
         }
     });

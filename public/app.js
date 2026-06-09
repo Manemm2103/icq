@@ -207,10 +207,169 @@ function openProfile() {
     
     // Render Background Options
     renderBackgroundOptions();
+    loadContactState();
+    loadIntegrationTokens();
 }
 
 function closeProfile() {
     profileModal.style.display = 'none';
+}
+
+function renderProfileEntityList(containerId, items, options = {}) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    if (!items || !items.length) {
+        container.innerHTML = `<div class="profile-mini-empty">${options.emptyText || 'Keine Einträge'}</div>`;
+        return;
+    }
+
+    container.innerHTML = items.map((item) => {
+        const meta = options.meta ? options.meta(item) : '';
+        const actions = options.actions ? options.actions(item) : '';
+        return `
+            <div class="profile-mini-item">
+                <div class="profile-mini-copy">
+                    <div class="profile-mini-title">${escapeHtml(item.username || item.integration_username || item.name || 'Eintrag')}</div>
+                    ${meta ? `<div class="profile-mini-meta">${meta}</div>` : ''}
+                </div>
+                ${actions ? `<div class="profile-mini-actions">${actions}</div>` : ''}
+            </div>
+        `;
+    }).join('');
+}
+
+async function loadContactState() {
+    if (!currentUser) return;
+    try {
+        const res = await axios.get(`/api/profile/${currentUser.id}/contacts`, {
+            params: { requesterId: currentUser.id }
+        });
+        const data = res.data || {};
+        renderProfileEntityList('pending-contacts-list', data.pendingIncoming || [], {
+            emptyText: 'Keine offenen Anfragen',
+            meta: item => `DRQ#: ${item.uin}`,
+            actions: item => `
+                <button type="button" onclick="acceptContact(${item.id})">Annehmen</button>
+                <button type="button" class="secondary-btn" onclick="rejectContact(${item.id})">Ablehnen</button>
+            `
+        });
+        renderProfileEntityList('outgoing-contacts-list', data.pendingOutgoing || [], {
+            emptyText: 'Keine gesendeten Anfragen',
+            meta: item => `DRQ#: ${item.uin}`
+        });
+        renderProfileEntityList('accepted-contacts-list', data.accepted || [], {
+            emptyText: 'Noch keine Kontakte',
+            meta: item => `DRQ#: ${item.uin}`
+        });
+    } catch (err) {
+        console.error('Failed to load contacts', err);
+    }
+}
+
+async function sendContactRequest() {
+    const input = document.getElementById('contact-search-input');
+    const target = input.value.trim();
+    if (!target) return;
+    try {
+        await axios.post(`/api/profile/${currentUser.id}/contacts/request`, {
+            requesterId: currentUser.id,
+            target
+        });
+        input.value = '';
+        await loadContactState();
+        showToast('Kontakt', 'Kontaktanfrage gesendet', currentUser);
+    } catch (err) {
+        alert(err.response?.data?.message || 'Kontaktanfrage fehlgeschlagen');
+    }
+}
+
+async function acceptContact(contactId) {
+    try {
+        await axios.post(`/api/profile/${currentUser.id}/contacts/${contactId}/accept`, {
+            requesterId: currentUser.id
+        });
+        await loadContactState();
+    } catch (err) {
+        alert(err.response?.data?.message || 'Anfrage konnte nicht angenommen werden');
+    }
+}
+
+async function rejectContact(contactId) {
+    try {
+        await axios.post(`/api/profile/${currentUser.id}/contacts/${contactId}/reject`, {
+            requesterId: currentUser.id
+        });
+        await loadContactState();
+    } catch (err) {
+        alert(err.response?.data?.message || 'Anfrage konnte nicht entfernt werden');
+    }
+}
+
+async function loadIntegrationTokens() {
+    if (!currentUser) return;
+    try {
+        const res = await axios.get(`/api/profile/${currentUser.id}/integrations`, {
+            params: { requesterId: currentUser.id }
+        });
+        renderProfileEntityList('integration-token-list', res.data?.tokens || [], {
+            emptyText: 'Noch keine ioBroker Keys',
+            meta: item => {
+                const label = item.integration_username ? `${item.integration_username}${item.integration_uin ? ` (DRQ#: ${item.integration_uin})` : ''}` : 'Noch nicht verbunden';
+                const state = item.active ? 'aktiv' : 'deaktiviert';
+                return `${escapeHtml(item.name || 'Ohne Namen')} · ${escapeHtml(label)} · ${state}`;
+            },
+            actions: item => `
+                <button type="button" onclick="rotateIntegrationToken(${item.id})">Neu</button>
+                <button type="button" class="secondary-btn" onclick="toggleIntegrationToken(${item.id}, ${item.active ? 'false' : 'true'})">${item.active ? 'Aus' : 'An'}</button>
+            `
+        });
+    } catch (err) {
+        console.error('Failed to load integration tokens', err);
+    }
+}
+
+async function createIntegrationToken() {
+    const nameInput = document.getElementById('integration-name-input');
+    const output = document.getElementById('integration-token-output');
+    try {
+        const res = await axios.post(`/api/profile/${currentUser.id}/integrations/tokens`, {
+            requesterId: currentUser.id,
+            name: nameInput.value.trim()
+        });
+        output.style.display = 'block';
+        output.textContent = `Neuer API Key: ${res.data.token}`;
+        nameInput.value = '';
+        await loadIntegrationTokens();
+    } catch (err) {
+        alert(err.response?.data?.message || 'API Key konnte nicht erzeugt werden');
+    }
+}
+
+async function rotateIntegrationToken(tokenId) {
+    const output = document.getElementById('integration-token-output');
+    try {
+        const res = await axios.post(`/api/profile/${currentUser.id}/integrations/tokens/${tokenId}/rotate`, {
+            requesterId: currentUser.id
+        });
+        output.style.display = 'block';
+        output.textContent = `Neuer API Key: ${res.data.token}`;
+        await loadIntegrationTokens();
+    } catch (err) {
+        alert(err.response?.data?.message || 'API Key konnte nicht erneuert werden');
+    }
+}
+
+async function toggleIntegrationToken(tokenId, active) {
+    try {
+        await axios.post(`/api/profile/${currentUser.id}/integrations/tokens/${tokenId}/toggle`, {
+            requesterId: currentUser.id,
+            active
+        });
+        await loadIntegrationTokens();
+    } catch (err) {
+        alert(err.response?.data?.message || 'API Key konnte nicht umgeschaltet werden');
+    }
 }
 
 const bgPresets = [
@@ -574,6 +733,12 @@ let allUsersCache = [];
 socket.on('user_list', (users) => {
     allUsersCache = users;
     renderUserList();
+});
+
+socket.on('contacts_updated', () => {
+    if (profileModal.style.display === 'block') {
+        loadContactState();
+    }
 });
 
 
