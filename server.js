@@ -245,6 +245,46 @@ function hasPersonalIntegrationLink(userId, integrationUserId) {
     `).get(Number(userId), Number(integrationUserId));
 }
 
+function getActiveChatMute(userId, otherUserId) {
+    const row = db.prepare(`
+        SELECT id, user_id, muted_user_id, mute_until, is_forever
+        FROM chat_mutes
+        WHERE user_id = ?
+          AND muted_user_id = ?
+        LIMIT 1
+    `).get(Number(userId), Number(otherUserId));
+
+    if (!row) return null;
+    if (Number(row.is_forever) === 1) return row;
+    if (row.mute_until) {
+        const untilTs = Date.parse(row.mute_until);
+        if (!Number.isNaN(untilTs) && untilTs > Date.now()) {
+            return row;
+        }
+    }
+
+    db.prepare('DELETE FROM chat_mutes WHERE id = ?').run(row.id);
+    return null;
+}
+
+function getChatMuteSettingsForUser(userId) {
+    const nowIso = new Date().toISOString();
+    db.prepare(`
+        DELETE FROM chat_mutes
+        WHERE user_id = ?
+          AND is_forever = 0
+          AND mute_until IS NOT NULL
+          AND mute_until <= ?
+    `).run(Number(userId), nowIso);
+
+    return db.prepare(`
+        SELECT muted_user_id, mute_until, is_forever
+        FROM chat_mutes
+        WHERE user_id = ?
+        ORDER BY muted_user_id ASC
+    `).all(Number(userId));
+}
+
 function getVisibleUsersForUser(userId) {
     const requester = db.prepare('SELECT id, role FROM users WHERE id = ?').get(Number(userId));
     if (!requester) return [];
@@ -392,13 +432,15 @@ function createStoredMessage({ senderId, receiverId, content, type = 'text', fil
 
     const sender = db.prepare('SELECT username FROM users WHERE id = ?').get(senderId);
     const senderName = sender ? sender.username : 'Unbekannt';
-    sendPushToUser(receiverId, {
-        title: `Neue Nachricht von ${senderName}`,
-        body: type === 'text' ? content : 'Neue Mediendatei empfangen',
-        icon: '/drq-logo.svg',
-        tag: `message-${senderId}`,
-        data: { type: 'message', senderId: Number(senderId) }
-    });
+    if (!getActiveChatMute(receiverId, senderId)) {
+        sendPushToUser(receiverId, {
+            title: `Neue Nachricht von ${senderName}`,
+            body: type === 'text' ? content : 'Neue Mediendatei empfangen',
+            icon: '/drq-logo.svg',
+            tag: `message-${senderId}`,
+            data: { type: 'message', senderId: Number(senderId) }
+        });
+    }
 
     return message;
 }
@@ -515,6 +557,16 @@ db.exec(`
         active INTEGER DEFAULT 1,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS chat_mutes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        muted_user_id INTEGER NOT NULL,
+        mute_until DATETIME,
+        is_forever INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, muted_user_id)
+    );
     CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         sender_id INTEGER,
@@ -594,6 +646,16 @@ try {
             last_used_at DATETIME,
             active INTEGER DEFAULT 1,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS chat_mutes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            muted_user_id INTEGER NOT NULL,
+            mute_until DATETIME,
+            is_forever INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, muted_user_id)
         );
     `);
 } catch (e) { console.error("Migration error:", e); }
@@ -1504,6 +1566,86 @@ app.get('/api/profile/:id/integrations', (req, res) => {
     }
 
     res.json({ success: true, tokens: getIntegrationTokensForUser(userId) });
+});
+
+app.get('/api/profile/:id/chat-settings', (req, res) => {
+    const userId = Number(req.params.id);
+    const requesterId = Number(req.query.requesterId || userId);
+
+    if (userId !== requesterId) {
+        return res.status(403).json({ success: false, message: 'Nicht erlaubt' });
+    }
+
+    res.json({ success: true, mutes: getChatMuteSettingsForUser(userId) });
+});
+
+app.post('/api/profile/:id/chats/:contactId/mute', (req, res) => {
+    const userId = Number(req.params.id);
+    const requesterId = Number(req.body?.requesterId || userId);
+    const contactId = Number(req.params.contactId);
+    const durationHours = Number(req.body?.durationHours || 0);
+    const forever = req.body?.forever === true;
+
+    if (userId !== requesterId) {
+        return res.status(403).json({ success: false, message: 'Nicht erlaubt' });
+    }
+    if (!canUsersChat(userId, contactId)) {
+        return res.status(403).json({ success: false, message: 'Chat nicht erlaubt' });
+    }
+
+    const muteUntil = forever || durationHours <= 0
+        ? null
+        : new Date(Date.now() + durationHours * 60 * 60 * 1000).toISOString();
+
+    db.prepare(`
+        INSERT INTO chat_mutes (user_id, muted_user_id, mute_until, is_forever, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id, muted_user_id) DO UPDATE SET
+            mute_until = excluded.mute_until,
+            is_forever = excluded.is_forever,
+            updated_at = CURRENT_TIMESTAMP
+    `).run(userId, contactId, muteUntil, forever ? 1 : 0);
+
+    res.json({ success: true, muteUntil, isForever: forever });
+});
+
+app.delete('/api/profile/:id/chats/:contactId/mute', (req, res) => {
+    const userId = Number(req.params.id);
+    const requesterId = Number(req.body?.requesterId || userId);
+    const contactId = Number(req.params.contactId);
+
+    if (userId !== requesterId) {
+        return res.status(403).json({ success: false, message: 'Nicht erlaubt' });
+    }
+
+    db.prepare(`
+        DELETE FROM chat_mutes
+        WHERE user_id = ?
+          AND muted_user_id = ?
+    `).run(userId, contactId);
+
+    res.json({ success: true });
+});
+
+app.delete('/api/profile/:id/chats/:contactId/history', (req, res) => {
+    const userId = Number(req.params.id);
+    const requesterId = Number(req.body?.requesterId || userId);
+    const contactId = Number(req.params.contactId);
+
+    if (userId !== requesterId) {
+        return res.status(403).json({ success: false, message: 'Nicht erlaubt' });
+    }
+    if (!canUsersChat(userId, contactId)) {
+        return res.status(403).json({ success: false, message: 'Chat nicht erlaubt' });
+    }
+
+    db.prepare(`
+        DELETE FROM messages
+        WHERE (sender_id = ? AND receiver_id = ?)
+           OR (sender_id = ? AND receiver_id = ?)
+    `).run(userId, contactId, contactId, userId);
+
+    res.json({ success: true });
 });
 
 app.post('/api/profile/:id/integrations/tokens', (req, res) => {

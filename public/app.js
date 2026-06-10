@@ -32,6 +32,7 @@ let contactStateCache = {
 };
 let integrationTokensCache = [];
 let currentChatLoadSeq = 0;
+let mutedChatsCache = {};
 
 const soundUhOh = document.getElementById('sound-uhoh');
 const soundRing = document.getElementById('sound-ring');
@@ -80,6 +81,13 @@ window.onload = async () => {
     const savedUnread = localStorage.getItem('icq_unread');
     if (savedUnread) unreadCounts = JSON.parse(savedUnread);
     setChatComposerDisabled(true, 'Bitte zuerst einen Chat waehlen');
+    document.addEventListener('click', (event) => {
+        const menu = document.getElementById('chat-actions-menu');
+        const button = document.getElementById('chat-mute-btn');
+        if (!menu || menu.style.display !== 'flex') return;
+        if (menu.contains(event.target) || button?.contains(event.target)) return;
+        closeChatActionsMenu();
+    });
 };
 
 function toggleSound(enabled) {
@@ -115,6 +123,7 @@ function restoreSession(user) {
     
     applyChatBackground(user.chat_bg);
     loadContactState();
+    loadChatSettings();
     socket.emit('join', currentUser.id);
 }
 
@@ -283,6 +292,40 @@ async function loadContactState() {
     } catch (err) {
         console.error('Failed to load contacts', err);
     }
+}
+
+async function loadChatSettings() {
+    if (!currentUser) return;
+    try {
+        const res = await axios.get(`/api/profile/${currentUser.id}/chat-settings`, {
+            params: { requesterId: currentUser.id }
+        });
+        mutedChatsCache = {};
+        (res.data?.mutes || []).forEach((item) => {
+            mutedChatsCache[String(item.muted_user_id)] = {
+                muteUntil: item.mute_until || null,
+                isForever: Number(item.is_forever) === 1
+            };
+        });
+        updateChatMuteUi();
+        renderUserList();
+    } catch (err) {
+        console.error('Failed to load chat settings', err);
+    }
+}
+
+function isChatMuted(userId) {
+    const entry = mutedChatsCache[String(userId)];
+    if (!entry) return false;
+    if (entry.isForever) return true;
+    if (entry.muteUntil) {
+        const untilTs = Date.parse(entry.muteUntil);
+        if (!Number.isNaN(untilTs) && untilTs > Date.now()) {
+            return true;
+        }
+    }
+    delete mutedChatsCache[String(userId)];
+    return false;
 }
 
 async function sendContactRequest() {
@@ -830,6 +873,7 @@ socket.on('user_list', (users) => {
         }
     }
     renderUserList();
+    updateChatMuteUi();
 });
 
 socket.on('contacts_updated', () => {
@@ -878,6 +922,9 @@ function renderUserList() {
         const div = document.createElement('div');
         const stateClass = user.requestState ? `request-${user.requestState}` : (user.status || 'offline');
         div.className = `contact-item ${stateClass}`;
+        if (!user.kind && isChatMuted(user.id)) {
+            div.classList.add('is-muted');
+        }
         div.onclick = () => openChat(user);
         
         if (currentChatPartner && getChatEntryKey(currentChatPartner) === getChatEntryKey(user)) {
@@ -959,8 +1006,9 @@ function getContactListSubtitle(entry) {
 socket.on('receive_message', (msg) => {
     const sender = allUsersCache.find(u => u.id === msg.sender_id);
     const senderName = sender ? sender.username : "Unbekannt";
+    const mutedForChat = msg.sender_id !== currentUser.id && isChatMuted(msg.sender_id);
 
-    if (msg.sender_id !== currentUser.id && soundEnabled) {
+    if (msg.sender_id !== currentUser.id && soundEnabled && !mutedForChat) {
         const isCurrentChat = (currentChatPartner && msg.sender_id === currentChatPartner.id);
         const isInactive = (Date.now() - lastActivityTime) > 5 * 60 * 1000; // 5 minutes
         const isHidden = document.hidden;
@@ -981,8 +1029,8 @@ socket.on('receive_message', (msg) => {
         appendMessage(msg);
         scrollToBottom();
     } else if (msg.sender_id !== currentUser.id) {
-        if(soundEnabled) soundUhOh.play().catch(e => {}); 
-        showToast(senderName, msg.content, sender);
+        if(soundEnabled && !mutedForChat) soundUhOh.play().catch(e => {}); 
+        if (!mutedForChat) showToast(senderName, msg.content, sender);
         unreadCounts[msg.sender_id] = (unreadCounts[msg.sender_id] || 0) + 1;
         saveUnread();
         renderUserList();
@@ -1183,6 +1231,7 @@ async function openChat(user) {
     // Update Status Dot in Header
     const statusDot = document.getElementById('chat-status');
     statusDot.className = `status-dot ${getContactIndicatorClass(user)}`;
+    updateChatMuteUi();
     
     if (user.kind === 'user' || !user.kind) {
         unreadCounts[user.id] = 0;
@@ -1238,10 +1287,83 @@ async function openChat(user) {
     }
 }
 
+function toggleChatActionsMenu() {
+    const menu = document.getElementById('chat-actions-menu');
+    if (!currentChatPartner || currentChatPartner.kind) return;
+    menu.style.display = (menu.style.display === 'flex') ? 'none' : 'flex';
+}
+
+function closeChatActionsMenu() {
+    const menu = document.getElementById('chat-actions-menu');
+    if (menu) menu.style.display = 'none';
+}
+
+function updateChatMuteUi() {
+    const muteBtn = document.getElementById('chat-mute-btn');
+    if (!muteBtn) return;
+    if (!currentChatPartner || currentChatPartner.kind) {
+        muteBtn.style.display = 'none';
+        closeChatActionsMenu();
+        return;
+    }
+    muteBtn.style.display = 'inline-flex';
+    muteBtn.textContent = isChatMuted(currentChatPartner.id) ? '🔕' : '🔔';
+    muteBtn.title = isChatMuted(currentChatPartner.id) ? 'Chat ist stumm' : 'Chat Optionen';
+}
+
+async function muteCurrentChat(mode) {
+    if (!currentChatPartner || currentChatPartner.kind) return;
+    try {
+        await axios.post(`/api/profile/${currentUser.id}/chats/${currentChatPartner.id}/mute`, {
+            requesterId: currentUser.id,
+            durationHours: mode === 'forever' ? 0 : Number(mode),
+            forever: mode === 'forever'
+        });
+        await loadChatSettings();
+        closeChatActionsMenu();
+    } catch (err) {
+        alert(err.response?.data?.message || 'Chat konnte nicht stumm geschaltet werden');
+    }
+}
+
+async function unmuteCurrentChat() {
+    if (!currentChatPartner || currentChatPartner.kind) return;
+    try {
+        await axios.delete(`/api/profile/${currentUser.id}/chats/${currentChatPartner.id}/mute`, {
+            data: { requesterId: currentUser.id }
+        });
+        await loadChatSettings();
+        closeChatActionsMenu();
+    } catch (err) {
+        alert(err.response?.data?.message || 'Stumm konnte nicht aufgehoben werden');
+    }
+}
+
+async function clearCurrentChatHistory() {
+    if (!currentChatPartner || currentChatPartner.kind) return;
+    if (!confirm(`Chatverlauf mit ${currentChatPartner.username} wirklich leeren?`)) return;
+    try {
+        await axios.delete(`/api/profile/${currentUser.id}/chats/${currentChatPartner.id}/history`, {
+            data: { requesterId: currentUser.id }
+        });
+        currentChatMessages = [];
+        unreadCounts[currentChatPartner.id] = 0;
+        saveUnread();
+        renderCurrentChatMessages();
+        renderUserList();
+        updateGlobalUnreadBadge();
+        closeChatActionsMenu();
+    } catch (err) {
+        alert(err.response?.data?.message || 'Chatverlauf konnte nicht geleert werden');
+    }
+}
+
 function showContactList() {
     currentChatLoadSeq += 1;
     currentChatPartner = null;
     currentChatMessages = [];
+    updateChatMuteUi();
+    closeChatActionsMenu();
     renderUserList();
     if (chatSearchBtn) chatSearchBtn.style.display = 'none';
     closeChatSearch();
@@ -1490,6 +1612,8 @@ function closeChat() {
     currentChatLoadSeq += 1;
     currentChatPartner = null;
     currentChatMessages = [];
+    updateChatMuteUi();
+    closeChatActionsMenu();
     chatTitle.textContent = 'Wähle einen Kontakt';
     document.getElementById('chat-subtitle').textContent = '';
     document.getElementById('chat-avatar').style.backgroundImage = 'none';
