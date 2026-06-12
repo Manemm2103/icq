@@ -22,7 +22,7 @@ let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
 let callDebugEnabled = false;
-let runtimeVersionLabel = 'Version 1.0.1';
+let runtimeVersionLabel = 'Version 1.0.3';
 let currentChatMessages = [];
 let activeSearchTab = 'text';
 let contactStateCache = {
@@ -273,7 +273,7 @@ async function loadContactState() {
         };
         renderProfileEntityList('pending-contacts-list', data.pendingIncoming || [], {
             emptyText: 'Keine offenen Anfragen',
-            meta: item => `DRQ#: ${item.uin}`,
+            meta: item => `DRQ-Nummer: ${item.uin}`,
             actions: item => `
                 <button type="button" onclick="acceptContact(${item.id})">Annehmen</button>
                 <button type="button" class="secondary-btn" onclick="rejectContact(${item.id})">Ablehnen</button>
@@ -281,14 +281,14 @@ async function loadContactState() {
         });
         renderProfileEntityList('outgoing-contacts-list', data.pendingOutgoing || [], {
             emptyText: 'Keine gesendeten Anfragen',
-            meta: item => `DRQ#: ${item.uin}`,
+            meta: item => `DRQ-Nummer: ${item.uin}`,
             actions: item => `
                 <button type="button" class="secondary-btn" onclick="deleteContactRequest(${item.id})">Entfernen</button>
             `
         });
         renderProfileEntityList('accepted-contacts-list', data.accepted || [], {
             emptyText: 'Noch keine Kontakte',
-            meta: item => `DRQ#: ${item.uin}`,
+            meta: item => `DRQ-Nummer: ${item.uin}`,
             actions: item => `
                 <button type="button" class="secondary-btn" onclick="promptRemoveAcceptedContact(${item.user_id})">Entfernen</button>
             `
@@ -477,7 +477,7 @@ async function loadIntegrationTokens() {
         renderProfileEntityList('integration-token-list', integrationTokensCache, {
             emptyText: 'Noch keine ioBroker Keys',
             meta: item => {
-                const label = item.integration_username ? `${item.integration_username}${item.integration_uin ? ` (DRQ#: ${item.integration_uin})` : ''}` : 'Noch nicht verbunden';
+                const label = item.integration_username ? `${item.integration_username}${item.integration_uin ? ` (DRQ-Nummer: ${item.integration_uin})` : ''}` : 'Noch nicht verbunden';
                 const state = item.active ? 'aktiv' : 'deaktiviert';
                 return `${escapeHtml(item.name || 'Ohne Namen')} · ${escapeHtml(label)} · ${state}`;
             },
@@ -1010,7 +1010,8 @@ function renderUserList() {
             <div class="contact-status-mini ${getContactIndicatorClass(user)}"></div>
             <div class="contact-info">
                 <div class="contact-name">${escapeHtml(user.displayName || user.username)}</div>
-                <div class="contact-uin">${escapeHtml(getContactMetaLabel(user))} ${statusMsg}</div>
+                <div class="contact-uin">${escapeHtml(getContactMetaLabel(user))}</div>
+                ${statusMsg}
             </div>
             ${badgeHtml}
         `;
@@ -1055,10 +1056,7 @@ function getContactIndicatorClass(entry) {
 }
 
 function getContactMetaLabel(entry) {
-    if (entry.requestState === 'pending') return `Anfrage · DRQ#: ${entry.uin}`;
-    if (entry.requestState === 'outgoing') return `Ausstehend · DRQ#: ${entry.uin}`;
-    if (entry.requestState === 'rejected') return `Inaktiv · DRQ#: ${entry.uin}`;
-    return `DRQ#: ${entry.uin}`;
+    return `DRQ-Nummer: ${entry.uin}`;
 }
 
 function getContactListSubtitle(entry) {
@@ -1683,7 +1681,7 @@ function renderContactRequestChat(user) {
             <div class="request-chat-kicker">${user.requestState === 'pending' ? 'Kontaktanfrage' : user.requestState === 'outgoing' ? 'Gesendete Anfrage' : 'Inaktiver Kontakt'}</div>
             <h4>${title}</h4>
             <p>${title} ${requestText}</p>
-            <div class="request-chat-meta">DRQ#: ${escapeHtml(String(user.uin || ''))}</div>
+            <div class="request-chat-meta">DRQ-Nummer: ${escapeHtml(String(user.uin || ''))}</div>
             <div class="request-chat-actions">${actions.join('')}</div>
         </div>
     `;

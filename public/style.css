@@ -234,13 +234,13 @@ body, html {
 .contact-uin {
     font-size: 0.7rem;
     color: #666;
-    display: flex;
-    justify-content: space-between;
+    margin-top: 2px;
 }
 .contact-status-msg {
     font-size: 0.75rem;
     color: #555;
     font-style: italic;
+    margin-top: 2px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
