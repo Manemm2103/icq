@@ -142,6 +142,30 @@ body, html {
     border-bottom: 1px solid rgba(0,0,0,0.1);
 }
 
+.my-profile-copy {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    margin-right: auto;
+}
+
+#my-username {
+    font-size: 1rem;
+    color: #111;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#my-uin {
+    font-size: 0.75rem;
+    color: #666;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .avatar {
     width: 40px;
     height: 40px;

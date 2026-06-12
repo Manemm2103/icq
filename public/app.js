@@ -22,7 +22,7 @@ let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
 let callDebugEnabled = false;
-let runtimeVersionLabel = 'Version 1.0.3';
+let runtimeVersionLabel = 'Version 1.0.4';
 let currentChatMessages = [];
 let activeSearchTab = 'text';
 let contactStateCache = {
@@ -99,6 +99,7 @@ function toggleSound(enabled) {
 function restoreSession(user) {
     currentUser = user;
     document.getElementById('my-username').textContent = currentUser.username;
+    document.getElementById('my-uin').textContent = `DRQ-Nummer: ${currentUser.uin || '-'}`;
 
     const pushButton = document.getElementById('enable-push-btn');
     if (typeof Notification !== 'undefined' && pushButton && Notification.permission === 'default') {
