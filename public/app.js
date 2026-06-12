@@ -22,7 +22,7 @@ let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
 let callDebugEnabled = false;
-let runtimeVersionLabel = 'Version 1.0.4';
+let runtimeVersionLabel = 'Version 1.0.5';
 let currentChatMessages = [];
 let activeSearchTab = 'text';
 let contactStateCache = {
@@ -1057,7 +1057,11 @@ function getContactIndicatorClass(entry) {
 }
 
 function getContactMetaLabel(entry) {
-    return `DRQ-Nummer: ${entry.uin}`;
+    if (entry.requestState === 'pending') return 'Kontaktanfrage';
+    if (entry.requestState === 'outgoing') return 'Anfrage gesendet';
+    if (entry.requestState === 'rejected') return 'Nicht mehr befreundet';
+    if (entry.is_integration === 1) return 'Persoenliche ioBroker-Integration';
+    return '';
 }
 
 function getContactListSubtitle(entry) {
