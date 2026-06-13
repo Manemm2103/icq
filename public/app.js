@@ -22,7 +22,7 @@ let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
 let callDebugEnabled = false;
-let runtimeVersionLabel = 'Version 1.0.5';
+let runtimeVersionLabel = 'Version 1.1.0';
 let currentChatMessages = [];
 let activeSearchTab = 'text';
 let contactStateCache = {
@@ -45,6 +45,28 @@ const chatSearchBtn = document.getElementById('chat-search-btn');
 const chatSearchPanel = document.getElementById('chat-search-panel');
 const chatSearchInput = document.getElementById('chat-search-input');
 const chatSearchResults = document.getElementById('chat-search-results');
+
+function getVisibleName(user) {
+    if (!user) return 'Unbekannt';
+    const displayName = String(user.display_name || user.displayName || '').trim();
+    if (displayName) return displayName;
+    return user.username || user.integration_username || user.name || 'Unbekannt';
+}
+
+function getSortName(user) {
+    return getVisibleName(user).toLocaleLowerCase('de-DE');
+}
+
+function applyUiTheme(themeKey) {
+    const nextTheme = String(themeKey || 'graphite').trim() || 'graphite';
+    document.body.dataset.theme = nextTheme;
+    const themeMeta = document.querySelector('meta[name="theme-color"]');
+    const computed = getComputedStyle(document.documentElement);
+    const shellColor = computed.getPropertyValue('--shell-bg').trim();
+    if (themeMeta && shellColor) {
+        themeMeta.setAttribute('content', shellColor);
+    }
+}
 
 // --- Auth ---
 
@@ -98,8 +120,9 @@ function toggleSound(enabled) {
 
 function restoreSession(user) {
     currentUser = user;
-    document.getElementById('my-username').textContent = currentUser.username;
+    document.getElementById('my-username').textContent = getVisibleName(currentUser);
     document.getElementById('my-uin').textContent = `DRQ-Nummer: ${currentUser.uin || '-'}`;
+    applyUiTheme(currentUser.theme_key);
 
     const pushButton = document.getElementById('enable-push-btn');
     if (typeof Notification !== 'undefined' && pushButton && Notification.permission === 'default') {
@@ -222,8 +245,10 @@ function openProfile() {
     profileModal.style.display = 'block';
     document.getElementById('edit-uin').value = currentUser.uin || "---";
     document.getElementById('edit-username').value = currentUser.username;
+    document.getElementById('edit-display-name').value = currentUser.display_name || '';
     document.getElementById('edit-password').value = ""; // Don't show old pass
     document.getElementById('edit-status').value = currentUser.custom_status || ""; // Load Status
+    document.getElementById('edit-theme').value = currentUser.theme_key || 'graphite';
     
     // Render Background Options
     renderBackgroundOptions();
@@ -233,6 +258,9 @@ function openProfile() {
 
 function closeProfile() {
     profileModal.style.display = 'none';
+    if (currentUser) {
+        applyUiTheme(currentUser.theme_key);
+    }
 }
 
 function renderProfileEntityList(containerId, items, options = {}) {
@@ -250,7 +278,7 @@ function renderProfileEntityList(containerId, items, options = {}) {
         return `
             <div class="profile-mini-item">
                 <div class="profile-mini-copy">
-                    <div class="profile-mini-title">${escapeHtml(item.username || item.integration_username || item.name || 'Eintrag')}</div>
+                    <div class="profile-mini-title">${escapeHtml(getVisibleName(item))}</div>
                     ${meta ? `<div class="profile-mini-meta">${meta}</div>` : ''}
                 </div>
                 ${actions ? `<div class="profile-mini-actions">${actions}</div>` : ''}
@@ -363,6 +391,7 @@ async function acceptContact(contactId) {
                 id: activeEntry.user_id,
                 uin: activeEntry.uin,
                 username: activeEntry.username,
+                display_name: activeEntry.display_name || '',
                 avatar: activeEntry.avatar,
                 status: activeEntry.online_status || 'offline',
                 custom_status: activeEntry.custom_status || ''
@@ -386,7 +415,7 @@ async function rejectContact(contactId) {
                 ...rejectedEntry,
                 kind: 'contact_request_rejected',
                 requestState: 'rejected',
-                displayName: rejectedEntry.username
+                displayName: getVisibleName(rejectedEntry)
             });
         }
     } catch (err) {
@@ -445,7 +474,7 @@ async function removeAcceptedContact(contactId, userId, options = {}) {
                         ...rejectedEntry,
                         kind: 'contact_request_rejected',
                         requestState: 'rejected',
-                        displayName: rejectedEntry.username
+                        displayName: getVisibleName(rejectedEntry)
                     });
                 } else {
                     closeChat();
@@ -463,7 +492,7 @@ async function promptRemoveAcceptedContact(userId) {
         return alert('Freundschaftseintrag wurde nicht gefunden.');
     }
 
-    if (!confirm(`Freund ${acceptedEntry.username} wirklich entfernen?`)) return;
+    if (!confirm(`Freund ${getVisibleName(acceptedEntry)} wirklich entfernen?`)) return;
     const clearHistory = confirm('Soll auch der bisherige Verlauf geloescht werden?\n\nOK = Verlauf loeschen\nAbbrechen = Verlauf behalten');
     await removeAcceptedContact(acceptedEntry.id, acceptedEntry.user_id, { clearHistory });
 }
@@ -627,8 +656,10 @@ function selectBackground(bg) {
 
 async function saveProfile() {
     const newUsername = document.getElementById('edit-username').value;
+    const newDisplayName = document.getElementById('edit-display-name').value;
     const newPassword = document.getElementById('edit-password').value;
     const newStatus = document.getElementById('edit-status').value;
+    const newTheme = document.getElementById('edit-theme').value;
     const avatarInput = document.getElementById('edit-avatar');
     
     let avatarFilename = currentUser.avatar;
@@ -654,9 +685,11 @@ async function saveProfile() {
     try {
         const payload = {
             username: newUsername,
+            display_name: newDisplayName,
             avatar: avatarFilename,
             chat_bg: bgValue,
-            custom_status: newStatus
+            custom_status: newStatus,
+            theme_key: newTheme
         };
         if (newPassword) payload.password = newPassword;
 
@@ -679,7 +712,7 @@ function applyChatBackground(bg) {
     
     if (!bg || bg === 'default') {
         mainApp.style.backgroundImage = 'none';
-        mainApp.style.backgroundColor = '#e5ddd5';
+        mainApp.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--app-shell').trim() || '#e5ddd5';
     } else {
         if (bg.includes('url') || bg.includes('gradient')) {
             mainApp.style.backgroundImage = bg;
@@ -725,7 +758,7 @@ async function loadUsers() {
 
             const info = document.createElement('div');
             info.style.flex = '1';
-            info.innerHTML = `<b>${user.username}</b> (UIN: ${user.uin})`;
+            info.innerHTML = `<b>${escapeHtml(getVisibleName(user))}</b> (UIN: ${user.uin})`;
 
             const meta = document.createElement('div');
             meta.style.fontSize = '0.85rem';
@@ -933,7 +966,7 @@ socket.on('user_list', (users) => {
         const refreshedPartner = allUsersCache.find(user => Number(user.id) === Number(currentChatPartner.id));
         if (refreshedPartner) {
             currentChatPartner = { ...currentChatPartner, ...refreshedPartner };
-            chatTitle.textContent = `${currentChatPartner.displayName || currentChatPartner.username} (${currentChatPartner.uin})`;
+            chatTitle.textContent = `${getVisibleName(currentChatPartner)} (${currentChatPartner.uin})`;
             document.getElementById('chat-subtitle').textContent = getChatSubtitle(currentChatPartner);
             document.getElementById('chat-status').className = `status-dot ${getContactIndicatorClass(currentChatPartner)}`;
         }
@@ -977,7 +1010,7 @@ function renderUserList() {
     allUsersCache.sort((a, b) => {
         if (a.status === 'online' && b.status !== 'online') return -1;
         if (a.status !== 'online' && b.status === 'online') return 1;
-        return a.username.localeCompare(b.username);
+        return getSortName(a).localeCompare(getSortName(b), 'de-DE');
     });
 
     const requestEntries = buildContactRequestEntries();
@@ -1004,13 +1037,14 @@ function renderUserList() {
         // Avatar Style for list
         const avatarDiv = `<div class="contact-avatar" style="${avatarUrl ? `background-image: url('${avatarUrl}')` : ''}"></div>`;
         const statusMsgText = getContactListSubtitle(user);
+        const visibleName = getVisibleName(user);
         const statusMsg = statusMsgText ? `<div class="contact-status-msg">${escapeHtml(statusMsgText)}</div>` : '';
 
         div.innerHTML = `
             ${avatarDiv}
             <div class="contact-status-mini ${getContactIndicatorClass(user)}"></div>
             <div class="contact-info">
-                <div class="contact-name">${escapeHtml(user.displayName || user.username)}</div>
+                <div class="contact-name">${escapeHtml(visibleName)}</div>
                 <div class="contact-uin">${escapeHtml(getContactMetaLabel(user))}</div>
                 ${statusMsg}
             </div>
@@ -1025,19 +1059,19 @@ function buildContactRequestEntries() {
         ...item,
         kind: 'contact_request_incoming',
         requestState: 'pending',
-        displayName: item.username
+        displayName: getVisibleName(item)
     }));
     const outgoing = (contactStateCache.pendingOutgoing || []).map(item => ({
         ...item,
         kind: 'contact_request_outgoing',
         requestState: 'outgoing',
-        displayName: item.username
+        displayName: getVisibleName(item)
     }));
     const rejected = (contactStateCache.rejected || []).map(item => ({
         ...item,
         kind: 'contact_request_rejected',
         requestState: 'rejected',
-        displayName: item.username
+        displayName: getVisibleName(item)
     }));
     return [...incoming, ...outgoing, ...rejected];
 }
@@ -1073,7 +1107,7 @@ function getContactListSubtitle(entry) {
 
 socket.on('receive_message', (msg) => {
     const sender = allUsersCache.find(u => u.id === msg.sender_id);
-    const senderName = sender ? sender.username : "Unbekannt";
+    const senderName = getVisibleName(sender);
     const mutedForChat = msg.sender_id !== currentUser.id && isChatMuted(msg.sender_id);
 
     if (msg.sender_id !== currentUser.id && soundEnabled && !mutedForChat) {
@@ -1130,7 +1164,7 @@ socket.on('status_update', (data) => {
         renderUserList();
         if (data.status === 'online' && soundEnabled && (!currentUser || data.userId !== currentUser.id)) {
             soundUhOh.play().catch(e => {});
-            showToast(user.username, "ist jetzt online!", user);
+            showToast(getVisibleName(user), "ist jetzt online!", user);
         }
     }
 });
@@ -1283,7 +1317,7 @@ function updateMessageStatusUi(message) {
 async function openChat(user) {
     const chatLoadSeq = ++currentChatLoadSeq;
     currentChatPartner = user;
-    chatTitle.textContent = `${user.displayName || user.username} (${user.uin})`;
+    chatTitle.textContent = `${getVisibleName(user)} (${user.uin})`;
     document.getElementById('chat-subtitle').textContent = getChatSubtitle(user);
     
     // Set Header Avatar
@@ -1664,7 +1698,7 @@ function getChatSubtitle(user) {
 
 function renderContactRequestChat(user) {
     currentChatMessages = [];
-    const title = escapeHtml(user.displayName || user.username);
+    const title = escapeHtml(getVisibleName(user));
     const requestText = user.requestState === 'pending'
         ? 'moechte dich als Kontakt hinzufuegen.'
         : user.requestState === 'outgoing'
@@ -2276,7 +2310,7 @@ socket.on('call_user', (data) => {
     activeCallTargetSocketId = data.fromSocketId || null;
     callDebugLog('incoming_call', { from: data.from, video: data.video });
     const caller = allUsersCache.find(u => u.id === data.from);
-    callerNameSpan.textContent = (caller ? caller.username : "Unbekannt") + (data.video ? " (Video)" : " (Audio)");
+    callerNameSpan.textContent = getVisibleName(caller) + (data.video ? " (Video)" : " (Audio)");
     incomingCallModal.style.display = 'block';
     
     // Play ringtone if you have one
@@ -2300,12 +2334,12 @@ async function acceptCall() {
     // Check if incoming call has video to decide on our constraints (try to match)
     // For simplicity, we match: if they call audio-only, we answer audio-only.
     // If they call video, we try video too.
-    const wantVideo = incomingCallData.video !== false; 
+    const wantVideo = incomingCallData.video !== false;
     activeCallHasVideo = wantVideo;
     currentFacingMode = 'user';
     resetFloatingPreviewPosition();
     const caller = allUsersCache.find(u => u.id === incomingCallData.from);
-    updateCallOverlayMeta(caller ? caller.username : 'Unbekannt', wantVideo ? 'Videoanruf wird verbunden...' : 'Sprachanruf wird verbunden...');
+    updateCallOverlayMeta(getVisibleName(caller), wantVideo ? 'Videoanruf wird verbunden...' : 'Sprachanruf wird verbunden...');
     updateCallControls();
 
     try {

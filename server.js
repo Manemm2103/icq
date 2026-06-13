@@ -23,6 +23,7 @@ const legacyUploadsDir = path.join(__dirname, 'public/uploads');
 const legacyBackgroundsDir = path.join(__dirname, 'public/backgrounds');
 const iobrokerApiKey = String(process.env.IOBROKER_API_KEY || '').trim();
 const iobrokerSenderUsername = String(process.env.IOBROKER_SENDER_USERNAME || 'ioBroker').trim() || 'ioBroker';
+const DEFAULT_THEME_KEY = 'graphite';
 const integrationPresenceTimers = new Map();
 
 function ensureDir(dirPath) {
@@ -154,6 +155,14 @@ function generateIntegrationSuffix() {
 
 function generateIntegrationTokenValue() {
     return crypto.randomBytes(24).toString('hex');
+}
+
+function getDisplayName(userLike) {
+    const displayName = String(userLike?.display_name || '').trim();
+    if (displayName) return displayName;
+    const username = String(userLike?.username || '').trim();
+    if (username) return username;
+    return 'Unbekannt';
 }
 
 function detectMediaMessageType({ mimeType = '', originalName = '', requestedType = '' } = {}) {
@@ -292,7 +301,7 @@ function getVisibleUsersForUser(userId) {
 
     if (requester.role === 'admin') {
         return db.prepare(`
-            SELECT id, uin, username, avatar, status, custom_status, can_chat, is_integration, owner_user_id
+            SELECT id, uin, username, display_name, avatar, status, custom_status, can_chat, is_integration, owner_user_id
             FROM users
             WHERE can_chat = 1
             ORDER BY username COLLATE NOCASE ASC
@@ -300,7 +309,7 @@ function getVisibleUsersForUser(userId) {
     }
 
     return db.prepare(`
-        SELECT DISTINCT u.id, u.uin, u.username, u.avatar, u.status, u.custom_status, u.can_chat, u.is_integration, u.owner_user_id
+        SELECT DISTINCT u.id, u.uin, u.username, u.display_name, u.avatar, u.status, u.custom_status, u.can_chat, u.is_integration, u.owner_user_id
         FROM users u
         WHERE u.can_chat = 1
           AND u.id != ?
@@ -456,8 +465,8 @@ function createStoredMessage({ senderId, receiverId, content, type = 'text', fil
     io.to(`user_${senderId}`).emit('receive_message', message);
     io.to(`user_${receiverId}`).emit('notification', { type: 'message' });
 
-    const sender = db.prepare('SELECT username FROM users WHERE id = ?').get(senderId);
-    const senderName = sender ? sender.username : 'Unbekannt';
+    const sender = db.prepare('SELECT username, display_name FROM users WHERE id = ?').get(senderId);
+    const senderName = getDisplayName(sender);
     if (!getActiveChatMute(receiverId, senderId)) {
         sendPushToUser(receiverId, {
             title: `Neue Nachricht von ${senderName}`,
@@ -553,10 +562,12 @@ db.exec(`
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         uin INTEGER UNIQUE,
         username TEXT UNIQUE,
+        display_name TEXT DEFAULT '',
         password TEXT,
         role TEXT DEFAULT 'user', -- admin, user
         avatar TEXT DEFAULT 'default.png',
         chat_bg TEXT DEFAULT 'default', -- can be 'color:xxxx' or 'image:file'
+        theme_key TEXT DEFAULT 'graphite',
         status TEXT DEFAULT 'offline',
         custom_status TEXT DEFAULT '', -- New: User defined status message
         public_key TEXT DEFAULT '', -- E2EE: Public Key (Base64)
@@ -614,9 +625,17 @@ db.exec(`
 // Migrations
 try {
     const userCols = db.prepare("PRAGMA table_info(users)").all();
+    if (!userCols.some(c => c.name === 'display_name')) {
+        db.prepare("ALTER TABLE users ADD COLUMN display_name TEXT DEFAULT ''").run();
+        console.log("Migration: Added display_name to users");
+    }
     if (!userCols.some(c => c.name === 'custom_status')) {
         db.prepare("ALTER TABLE users ADD COLUMN custom_status TEXT DEFAULT ''").run();
         console.log("Migration: Added custom_status to users");
+    }
+    if (!userCols.some(c => c.name === 'theme_key')) {
+        db.prepare(`ALTER TABLE users ADD COLUMN theme_key TEXT DEFAULT '${DEFAULT_THEME_KEY}'`).run();
+        console.log("Migration: Added theme_key to users");
     }
     if (!userCols.some(c => c.name === 'public_key')) {
         db.prepare("ALTER TABLE users ADD COLUMN public_key TEXT DEFAULT ''").run();
@@ -793,6 +812,7 @@ function getContactStateForUser(userId) {
             u.id AS user_id,
             u.uin,
             u.username,
+            u.display_name,
             u.avatar,
             u.status AS online_status,
             u.custom_status
@@ -817,6 +837,7 @@ function getContactStateForUser(userId) {
             u.id AS user_id,
             u.uin,
             u.username,
+            u.display_name,
             u.avatar,
             u.status AS online_status,
             u.custom_status
@@ -838,6 +859,7 @@ function getContactStateForUser(userId) {
             u.id AS user_id,
             u.uin,
             u.username,
+            u.display_name,
             u.avatar,
             u.status AS online_status,
             u.custom_status
@@ -1387,10 +1409,12 @@ app.post('/api/login', (req, res) => {
             user: { 
                 id: user.id, 
                 uin: user.uin,
-                username: user.username, 
+                username: user.username,
+                display_name: user.display_name || '',
                 avatar: user.avatar,
                 role: user.role,
                 chat_bg: user.chat_bg,
+                theme_key: user.theme_key || DEFAULT_THEME_KEY,
                 custom_status: user.custom_status || ''
             } 
         });
@@ -1403,7 +1427,7 @@ app.post('/api/login', (req, res) => {
 // Update Profile (Self)
 app.put('/api/profile/:id', (req, res) => {
     const { id } = req.params;
-    const { username, password, avatar, chat_bg, custom_status, public_key } = req.body;
+    const { username, display_name, password, avatar, chat_bg, custom_status, public_key, theme_key } = req.body;
     
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     if (!user) return res.status(404).json({ success: false, message: 'User nicht gefunden' });
@@ -1414,12 +1438,18 @@ app.put('/api/profile/:id', (req, res) => {
             if (exists) return res.status(400).json({ success: false, message: 'Username vergeben!' });
             db.prepare('UPDATE users SET username = ? WHERE id = ?').run(username, id);
         }
+        if (display_name !== undefined) {
+            db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(String(display_name || '').trim(), id);
+        }
         if (password) {
             const hash = bcrypt.hashSync(password, 10);
             db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hash, id);
         }
         if (avatar) db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(avatar, id);
         if (chat_bg) db.prepare('UPDATE users SET chat_bg = ? WHERE id = ?').run(chat_bg, id);
+        if (theme_key !== undefined) {
+            db.prepare('UPDATE users SET theme_key = ? WHERE id = ?').run(String(theme_key || DEFAULT_THEME_KEY).trim() || DEFAULT_THEME_KEY, id);
+        }
         
         // Custom Status Update
         if (custom_status !== undefined) {
@@ -1436,8 +1466,10 @@ app.put('/api/profile/:id', (req, res) => {
         broadcastVisibleUserList();
 
         res.json({ success: true, user: { 
-            id: updated.id, uin: updated.uin, username: updated.username, 
-            avatar: updated.avatar, role: updated.role, chat_bg: updated.chat_bg, 
+            id: updated.id, uin: updated.uin, username: updated.username,
+            display_name: updated.display_name || '',
+            avatar: updated.avatar, role: updated.role, chat_bg: updated.chat_bg,
+            theme_key: updated.theme_key || DEFAULT_THEME_KEY,
             custom_status: updated.custom_status || '',
             public_key: updated.public_key || ''
         }});
@@ -1471,7 +1503,7 @@ app.get('/api/profile/:id/user-search', (req, res) => {
     }
 
     const results = db.prepare(`
-        SELECT id, uin, username, avatar, status, custom_status
+        SELECT id, uin, username, display_name, avatar, status, custom_status
         FROM users
         WHERE can_chat = 1
           AND is_integration = 0
@@ -2370,8 +2402,8 @@ io.on('connection', (socket) => {
             });
         }
 
-        const caller = db.prepare('SELECT username FROM users WHERE id = ?').get(data.from);
-        const callerName = caller ? caller.username : 'Unbekannt';
+        const caller = db.prepare('SELECT username, display_name FROM users WHERE id = ?').get(data.from);
+        const callerName = getDisplayName(caller);
         sendPushToUser(data.userToCall, {
             title: data.video ? `Eingehender Videoanruf von ${callerName}` : `Eingehender Sprachanruf von ${callerName}`,
             body: 'Tippe, um DRQ zu oeffnen.',

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>DRQ</title>
-    <link rel="stylesheet" href="style.css?v=43">
+    <link rel="stylesheet" href="style.css?v=44">
     <script src="/socket.io/socket.io.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <link rel="manifest" href="/manifest.json?v=2">
@@ -52,7 +52,7 @@
             <div class="contact-list" id="contact-list">
                 <!-- Contacts -->
             </div>
-            <div class="build-version sidebar-footer-version" id="build-version-sidebar">Version 1.0.5</div>
+            <div class="build-version sidebar-footer-version" id="build-version-sidebar">Version 1.1.0</div>
         </div>
 
         <div class="chat-area" id="chat-area">
@@ -274,7 +274,18 @@
                 <label>Benutzerdaten</label>
                 <input type="text" id="edit-uin" disabled title="DRQ Nummer">
                 <input type="text" id="edit-username" placeholder="Benutzername">
+                <input type="text" id="edit-display-name" placeholder="Anzeigename">
                 <input type="password" id="edit-password" placeholder="Neues Passwort (optional)">
+            </div>
+
+            <div class="profile-section">
+                <label>Design</label>
+                <select id="edit-theme" onchange="applyUiTheme(this.value)">
+                    <option value="graphite">Graphit</option>
+                    <option value="midnight">Midnight</option>
+                    <option value="forest">Forest</option>
+                    <option value="rose">Rose</option>
+                </select>
             </div>
             
             <div class="profile-section">
@@ -330,6 +341,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
     <script src="bg-script.js?v=5"></script>
-    <script src="app.js?v=58"></script>
+    <script src="app.js?v=59"></script>
 </body>
 </html>
