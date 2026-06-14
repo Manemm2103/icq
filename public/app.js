@@ -21,7 +21,7 @@ const replyContent = document.getElementById('reply-preview-content');
 let currentReplyTo = null;
 let soundEnabled = true;
 let enterToSend = true;
-let runtimeVersionLabel = 'Version 1.1.3';
+let runtimeVersionLabel = 'Version 1.1.4';
 let currentChatMessages = [];
 let activeSearchTab = 'text';
 let contactStateCache = {
@@ -2253,7 +2253,7 @@ async function startCall(video = true) {
     } catch (err) {
         console.error('Error starting call:', err);
         alert('Konnte den Anruf nicht starten. Bitte Kamera/Mikrofon im Browser erlauben.');
-        endCall(true);
+        endCall(false);
     }
 }
 
@@ -2307,7 +2307,7 @@ async function acceptCall() {
     } catch (err) {
         console.error('Error accepting call:', err);
         alert('Konnte den Anruf nicht annehmen. Bitte Kamera/Mikrofon im Browser erlauben.');
-        endCall(true);
+        endCall(false);
     }
 }
 
